@@ -6,6 +6,9 @@
 
 html { scroll-behavior: smooth; }
 body { background: var(--ui-bg); }
+/* The Shell never scrolls its own page. Without this, iOS drags the whole layout,
+   embedded Client included, when a touch starts outside a scrollable area. */
+html.l4-shell, html.l4-shell body { overscroll-behavior: none; }
 .display-title { text-wrap: balance; letter-spacing: -.055em; }
 .landing { max-width: 1440px; margin-inline: auto; border-inline: 1px solid var(--ui-border); }
 

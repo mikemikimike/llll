@@ -27,6 +27,12 @@ html, body, #__nuxt {
   height: 100%;
 }
 
+/* The Client never scrolls its own page. Without this, iOS drags the whole layout
+   when a touch starts outside a scrollable area. */
+html, body {
+  overscroll-behavior: none;
+}
+
 .mention {
   color: var(--ui-primary);
   background: color-mix(in oklab, var(--ui-primary) 16%, transparent);
