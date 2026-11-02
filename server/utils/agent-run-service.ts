@@ -80,6 +80,10 @@ export async function runAuthorization(env: L4Env, run: Pick<AgentRun, 'id' | 'a
   auth.delegation.permissions = (auth.delegation.isOwner ? mandate.permissions : auth.delegation.permissions! & mandate.permissions)
   auth.delegation.isOwner = false
   auth.delegation.resourceAccess = intersect(auth.delegation.resourceAccess, mandate.resourceAccess)
+  // Agent access was judged above, and what it granted is now pinned by the mandate. The live grant list
+  // would otherwise be saved with every tool call and Factory action, and an unrelated grant to this
+  // person (another project, an expiry) would revoke work in flight.
+  delete auth.delegation.agentAccess
   // Every remaining check reads the database independently: run them as one round of requests,
   // since each Run is re-authorized on every model call, tool call and Node request.
   await Promise.all([
@@ -200,12 +204,9 @@ export async function createAgentRun(env: L4Env, actor: AuthorizationContext, re
     if (input.sourceMessageId && env.AGENT_RUN_DO) admissionError = modelError
     else fail(409, 'model_unavailable', modelError)
   }
-  const accessBudget = agent.delegation?.agentAccess?.dailyRuns
-  if (accessBudget) {
-    const used = await env.DB.prepare('SELECT count(*) AS n FROM agent_runs WHERE agent_id=? AND initiated_by=? AND created_at>=?')
-      .bind(input.agentId, actor.principal.id, new Date(Date.now() - 86400000).toISOString()).first<{ n: number }>()
-    if ((used?.n ?? 0) >= accessBudget) fail(429, 'access_budget', 'Your daily run limit for this agent is reached')
-  }
+  // A person's daily limit from Agent access is enforced inside the admission below, like the Agent's own.
+  const accessBudget = agent.delegation?.agentAccess?.dailyRuns ?? null
+  const accessSince = new Date(Date.now() - 86400000).toISOString()
   const now = nowIso()
   const sessionId = newId()
   await env.DB.prepare('INSERT INTO agent_sessions (id,agent_id,channel_id,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(agent_id,channel_id) DO NOTHING')
@@ -260,11 +261,13 @@ export async function createAgentRun(env: L4Env, actor: AuthorizationContext, re
   const admitted = await env.DB.prepare(`INSERT INTO agent_runs (id,session_id,agent_id,channel_id,initiated_by,task_id,source_message_id,idempotency_key,status,prompt,model,instructions,mandate_json,environment_json,deadline,created_at,updated_at,last_error,result_message_id)
     SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM agent_runs WHERE agent_id=? AND created_at>=?)<?
     AND (? IS NULL OR (SELECT count(*) FROM agent_runs WHERE json_extract(mandate_json,'$.rootRunId')=?)<?)
+    AND (? IS NULL OR (SELECT count(*) FROM agent_runs WHERE agent_id=? AND initiated_by=? AND created_at>=?)<?)
     ON CONFLICT(agent_id,initiated_by,idempotency_key) DO NOTHING RETURNING id`)
     .bind(id, session!.id, input.agentId, input.channelId, actor.principal.id, input.taskId ?? null, input.sourceMessageId ?? null, input.idempotencyKey, admissionError ? 'failed' : 'queued',
       input.prompt, model, profile.instructions, JSON.stringify(mandate), environment ? JSON.stringify(environment) : null,
       new Date(Date.now() + RUN_QUEUE_WAIT_MS).toISOString(), now, now, admissionError, admissionError ? newId() : null, input.agentId, new Date(Date.now() - 86400000).toISOString(), executionPolicy.dailyRuns,
-      mandate.parentRunId ?? null, mandate.rootRunId!, (mandate.execution?.maxChildRuns ?? 0) + 1).first<{ id: string }>()
+      mandate.parentRunId ?? null, mandate.rootRunId!, (mandate.execution?.maxChildRuns ?? 0) + 1,
+      accessBudget, input.agentId, actor.principal.id, accessSince, accessBudget ?? 0).first<{ id: string }>()
   if (!admitted) {
     const duplicate = await env.DB.prepare('SELECT id FROM agent_runs WHERE agent_id=? AND initiated_by=? AND idempotency_key=?').bind(input.agentId, actor.principal.id, input.idempotencyKey).first<{ id: string }>()
     if (duplicate) {
@@ -273,6 +276,11 @@ export async function createAgentRun(env: L4Env, actor: AuthorizationContext, re
       await runAuthorization(env, run)
       await wakeAdmittedRun(env, run)
       return run
+    }
+    if (accessBudget) {
+      const used = await env.DB.prepare('SELECT count(*) AS n FROM agent_runs WHERE agent_id=? AND initiated_by=? AND created_at>=?')
+        .bind(input.agentId, actor.principal.id, accessSince).first<{ n: number }>()
+      if ((used?.n ?? 0) >= accessBudget) fail(429, 'access_budget', 'Your daily run limit for this agent is reached')
     }
     fail(429, 'run_budget', 'Agent daily run limit reached')
   }

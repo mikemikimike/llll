@@ -23,8 +23,9 @@ export default defineEventHandler(async (event) => {
       'UPDATE database_views SET layout = ?, config_json = ?, version = version + 1, updated_at = ? WHERE id = ?',
     ).bind(layout, JSON.stringify(config), new Date().toISOString(), view.id)
   })
+  // A relation keeps no column: its links go with the field through the foreign key.
   await env.DB.batch([
-    env.DB.prepare(`UPDATE database_items SET ${field.slot} = NULL, version = version + 1, updated_at = ? WHERE database_id = ?`).bind(new Date().toISOString(), field.databaseId),
+    ...(field.type === 'relation' ? [] : [env.DB.prepare(`UPDATE database_items SET ${field.slot} = NULL, version = version + 1, updated_at = ? WHERE database_id = ?`).bind(new Date().toISOString(), field.databaseId)]),
     ...viewRepairs,
     env.DB.prepare('DELETE FROM database_fields WHERE id = ?').bind(id),
   ])

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { canvasPath } from '~~/shared/paths'
+import { Permission } from '~~/shared/permissions'
 import type { CanvasDTO, CanvasEdgeDTO, CanvasNodeColor, CanvasNodeDTO, DataResourcesDTO } from '~~/shared/types'
 import { createCanvasNodeEditor, type CanvasNodePatch } from '~/utils/canvas-node-editor'
 
@@ -10,6 +11,7 @@ const { serverId } = useServer()
 const { api } = useApi()
 const route = useRoute()
 const nav = useNavActions()
+const { can } = useRoleGrants()
 const qc = useQueryClient()
 const toast = useToast()
 const viewport = useTemplateRef<HTMLDivElement>('viewport')
@@ -350,9 +352,9 @@ function retryLoad() {
     </div>
     <div v-if="resourcesQ.isPending.value || (selectedId && canvases.some(canvas => canvas.id === selectedId) && canvasQ.isPending.value)" class="p-6"><LayoutSkeleton variant="cards" /></div>
     <LayoutLoadError v-else-if="resourcesQ.error.value || canvasQ.error.value" message="Canvases did not load." :retry="retryLoad" />
-    <div v-else-if="!activeCanvas" class="grid flex-1 place-items-center p-6">
-      <UButton icon="i-ph-plus" label="Create first canvas" @click="nav.createCanvasOpen.value = true" />
-    </div>
+    <LayoutEmptyState v-else-if="!activeCanvas" icon="i-ph-selection-background" title="No canvases yet" description="A free surface for notes and the connections between them: lay ideas out, then link what belongs together.">
+      <UButton v-if="can(Permission.manageDatabases)" icon="i-ph-plus" label="Create first canvas" @click="nav.createCanvasOpen.value = true" />
+    </LayoutEmptyState>
     <div v-else ref="viewport" class="min-h-0 flex-1 overflow-auto bg-muted/30">
       <div
         class="relative h-[1600px] w-[2400px]"

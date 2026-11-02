@@ -20,7 +20,7 @@ const querySchema = z.object({
 })
 
 export default defineEventHandler(async (event): Promise<DatabasePageDTO> => {
-  await requireMember(event, (await getServerId(cf(event).env.DB)), Permission.readData)
+  const actor = await requireMember(event, (await getServerId(cf(event).env.DB)), Permission.readData)
   const parsed = querySchema.safeParse(getQuery(event))
   if (!parsed.success) fail(400, 'bad_request', parsed.error.issues[0]?.message ?? 'Invalid database query')
   const query = parsed.data
@@ -31,5 +31,6 @@ export default defineEventHandler(async (event): Promise<DatabasePageDTO> => {
     pageSize: query.pageSize,
     dateFrom: query.dateFrom,
     dateTo: query.dateTo,
+    authorization: actor.authorization,
   })
 })

@@ -33,7 +33,8 @@ beforeEach(() => {
     CREATE TABLE server (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL);
     CREATE TABLE users (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, role_id TEXT NOT NULL);
     CREATE TABLE agents (user_id TEXT PRIMARY KEY, status TEXT NOT NULL, access TEXT NOT NULL DEFAULT 'open');
-    CREATE TABLE grants (id TEXT PRIMARY KEY, member_id TEXT, role_id TEXT, agent_id TEXT, expires_at TEXT);
+    CREATE TABLE grants (id TEXT PRIMARY KEY, member_id TEXT, role_id TEXT, agent_id TEXT, expires_at TEXT, project_id TEXT);
+    CREATE TABLE projects (id TEXT PRIMARY KEY, archived_at TEXT);
     CREATE TABLE channels (id TEXT PRIMARY KEY, type TEXT NOT NULL, visibility TEXT NOT NULL, parent_id TEXT);
     CREATE TABLE channel_members (channel_id TEXT NOT NULL, user_id TEXT NOT NULL);
     CREATE TABLE attachments (id TEXT PRIMARY KEY, message_id TEXT, content_type TEXT NOT NULL);
@@ -195,10 +196,15 @@ describe('agent message ingress', () => {
     await send('owner', 'owner-always')
     expect(receiveMessage).toHaveBeenCalledTimes(1)
 
-    sqlite.exec(`INSERT INTO grants VALUES ('expired','member',NULL,'agent','2020-01-01T00:00:00.000Z')`)
+    sqlite.exec(`INSERT INTO grants(id,member_id,role_id,agent_id,expires_at) VALUES ('expired','member',NULL,'agent','2020-01-01T00:00:00.000Z')`)
     await send('member', 'expired-access')
     expect(receiveMessage).toHaveBeenCalledTimes(1)
-    sqlite.exec(`INSERT INTO grants VALUES ('current','member',NULL,'agent',NULL)`)
+    // Access in an archived Project grants nothing, so it wakes nothing either.
+    sqlite.exec(`INSERT INTO projects VALUES ('old','2026-10-01T00:00:00.000Z');
+      INSERT INTO grants(id,member_id,role_id,agent_id,expires_at,project_id) VALUES ('archived','member',NULL,'agent',NULL,'old')`)
+    await send('member', 'archived-project-access')
+    expect(receiveMessage).toHaveBeenCalledTimes(1)
+    sqlite.exec(`INSERT INTO grants(id,member_id,role_id,agent_id,expires_at) VALUES ('current','member',NULL,'agent',NULL)`)
     await send('member', 'granted-member')
     expect(receiveMessage).toHaveBeenCalledTimes(2)
     expect(receiveMessage).toHaveBeenLastCalledWith(expect.objectContaining({ messageId: 'granted-member', authorId: 'member' }))

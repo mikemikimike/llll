@@ -7,6 +7,7 @@ import telegramNotificationsSql from '../../drizzle/server-migrations/0003_teleg
 import grantsSql from '../../drizzle/server-migrations/0004_grants.sql?raw'
 import grantsResourcesSql from '../../drizzle/server-migrations/0005_grants_resources.sql?raw'
 import taskPullLinksSql from '../../drizzle/server-migrations/0006_task_pull_links.sql?raw'
+import dataFieldsRelationsSql from '../../drizzle/server-migrations/0007_data_fields_relations.sql?raw'
 import { schema } from '../../drizzle/schema'
 import { isUuidV4 } from '../../shared/server-settings'
 
@@ -37,6 +38,7 @@ export const INIT_SQL = d1ExecSql([
   grantsSql,
   grantsResourcesSql,
   taskPullLinksSql,
+  dataFieldsRelationsSql,
 ].join('\n--> statement-breakpoint\n'))
 
 /** Bootstrap is only for an empty database. Deployed changes use D1 migrations. */

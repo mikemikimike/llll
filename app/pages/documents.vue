@@ -96,7 +96,7 @@ function retryLoad() {
 
 <template>
   <div class="flex h-full min-h-0 min-w-0 flex-col">
-    <LayoutPageHeader icon="i-ph-file-text" :title="activeDocument ? (title || 'Untitled') : 'Docs'">
+    <LayoutPageHeader icon="i-ph-file-text" :title="activeDocument ? (title || activeDocument.title) : 'Documents'">
       <template #actions>
         <span v-if="activeDocument" class="text-xs text-dimmed">{{ saving ? 'Saving…' : saveError ? 'Not saved' : dirty ? 'Unsaved' : 'Saved' }}</span>
         <DataBookmarkButton v-if="activeDocument" :server-id="serverId" target-type="document" :target-id="activeDocument.id" />
@@ -107,9 +107,9 @@ function retryLoad() {
 
     <div v-if="resourcesQ.isPending.value || (selectedId && documents.some(document => document.id === selectedId) && documentQ.isPending.value)"><LayoutSkeleton variant="document" /></div>
     <LayoutLoadError v-else-if="resourcesQ.error.value || documentQ.error.value" message="Documents did not load." :retry="retryLoad" />
-    <div v-else-if="!activeDocument" class="grid flex-1 place-items-center p-6">
-      <UButton v-if="can(Permission.writeData)" icon="i-ph-plus" label="Create first document" @click="nav.createDocumentOpen.value = true" />
-    </div>
+    <LayoutEmptyState v-else-if="!activeDocument" icon="i-ph-file-text" title="No documents yet" description="Notes, specs and guides your team edits together, with a bookmark for the ones you keep coming back to.">
+      <UButton v-if="can(Permission.writeData)" icon="i-ph-plus" label="Create first document" :loading="nav.documentCreating.value" @click="nav.createDocumentOpen.value = true" />
+    </LayoutEmptyState>
     <main v-else class="min-h-0 flex-1 overflow-y-auto">
       <UAlert v-if="saveError" color="error" title="Document not saved" :description="errorMessage(saveError)" class="m-4 w-auto">
         <template #actions>

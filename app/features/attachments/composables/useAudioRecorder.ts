@@ -19,7 +19,9 @@ function microphoneErrorMessage(error: unknown): string {
 async function speechWav(blob: Blob): Promise<Blob | null> {
   if (typeof OfflineAudioContext === 'undefined') return null
   try {
-    const decoded = await new AudioContext().decodeAudioData(await blob.arrayBuffer())
+    // Browsers allow only a few live contexts; one left open per recording would soon fail to decode.
+    const context = new AudioContext()
+    const decoded = await context.decodeAudioData(await blob.arrayBuffer()).finally(() => context.close().catch(() => undefined))
     const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * SPEECH_SAMPLE_RATE)), SPEECH_SAMPLE_RATE)
     const source = offline.createBufferSource()
     source.buffer = decoded

@@ -799,7 +799,7 @@ export const databaseFields = sqliteTable('database_fields', {
   id: text('id').primaryKey(),
   databaseId: text('database_id').notNull().references(() => databaseDefinitions.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  type: text('type', { enum: ['text', 'number', 'boolean', 'date', 'select'] }).notNull(),
+  type: text('type', { enum: ['text', 'number', 'boolean', 'date', 'select', 'multi_select', 'url', 'email', 'phone', 'person', 'relation'] }).notNull(),
   slot: text('slot').notNull(),
   configJson: text('config_json').notNull().default('{}'),
   position: integer('position').notNull().default(0),
@@ -809,7 +809,7 @@ export const databaseFields = sqliteTable('database_fields', {
   uniqueIndex('database_fields_name_unique').on(table.databaseId, table.name),
   uniqueIndex('database_fields_slot_unique').on(table.databaseId, table.type, table.slot),
   index('database_fields_position_idx').on(table.databaseId, table.position),
-  check('database_fields_type_check', sql`${table.type} in ('text', 'number', 'boolean', 'date', 'select')`),
+  check('database_fields_type_check', sql`${table.type} in ('text', 'number', 'boolean', 'date', 'select', 'multi_select', 'url', 'email', 'phone', 'person', 'relation')`),
 ])
 
 /** Scalar custom fields use bounded typed slots; semantic names stay in database_fields. */
@@ -879,7 +879,7 @@ export const databaseViews = sqliteTable('database_views', {
   id: text('id').primaryKey(),
   databaseId: text('database_id').notNull().references(() => databaseDefinitions.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  layout: text('layout', { enum: ['table', 'board', 'calendar', 'list'] }).notNull().default('table'),
+  layout: text('layout', { enum: ['table', 'board', 'calendar', 'list', 'gallery'] }).notNull().default('table'),
   configJson: text('config_json').notNull().default('{"visibleFieldIds":null,"filters":[],"sorts":[{"fieldId":"title","direction":"asc"}],"groupFieldId":null,"dateFieldId":null}'),
   position: integer('position').notNull().default(0),
   version: integer('version').notNull().default(1),
@@ -888,8 +888,22 @@ export const databaseViews = sqliteTable('database_views', {
 }, table => [
   uniqueIndex('database_views_name_unique').on(table.databaseId, table.name),
   index('database_views_database_position_idx').on(table.databaseId, table.position),
-  check('database_views_layout_check', sql`${table.layout} in ('table', 'board', 'calendar', 'list')`),
+  check('database_views_layout_check', sql`${table.layout} in ('table', 'board', 'calendar', 'list', 'gallery')`),
   check('database_views_version_check', sql`${table.version} > 0`),
+])
+
+/** One row per record a relation field points at; the field's target database is in its config. */
+export const databaseItemLinks = sqliteTable('database_item_links', {
+  id: text('id').primaryKey(),
+  fieldId: text('field_id').notNull().references(() => databaseFields.id, { onDelete: 'cascade' }),
+  itemId: text('item_id').notNull().references(() => databaseItems.id, { onDelete: 'cascade' }),
+  targetItemId: text('target_item_id').notNull().references(() => databaseItems.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+  createdAt: text('created_at').notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+}, table => [
+  uniqueIndex('database_item_links_unique').on(table.fieldId, table.itemId, table.targetItemId),
+  index('database_item_links_item_idx').on(table.itemId, table.fieldId, table.position),
+  index('database_item_links_target_idx').on(table.targetItemId),
 ])
 
 /** Rich-text documents are durable server data. */
@@ -1045,9 +1059,33 @@ export const grants = sqliteTable('grants', {
 }, table => [
   check('grants_subject', sql`(${table.memberId} IS NOT NULL AND ${table.roleId} IS NULL) OR (${table.roleId} IS NOT NULL AND ${table.memberId} IS NULL)`),
   check('grants_content', sql`(${table.policyId} IS NULL) <> (${table.permissions} IS NULL)`),
+  check('grants_permissions', sql`${table.permissions} IS NULL OR ${table.permissions} > 0`),
+  check('grants_daily_runs', sql`${table.dailyRuns} IS NULL OR ${table.dailyRuns} BETWEEN 1 AND 10000`),
+  // One scope at most. None means the whole Server, which only Agent access may use.
+  check('grants_one_scope', sql`(${table.projectId} IS NOT NULL) + (${table.channelId} IS NOT NULL) + (${table.mailboxId} IS NOT NULL) + (${table.gadgetId} IS NOT NULL) + (${table.gadgetVersionId} IS NOT NULL) + (${table.connectionId} IS NOT NULL) <= 1`),
+  check('grants_scope', sql`${table.agentId} IS NOT NULL OR ${table.projectId} IS NOT NULL OR ${table.channelId} IS NOT NULL OR ${table.mailboxId} IS NOT NULL OR ${table.gadgetId} IS NOT NULL OR ${table.gadgetVersionId} IS NOT NULL OR ${table.connectionId} IS NOT NULL`),
+  check('grants_agent_limits', sql`${table.agentId} IS NOT NULL OR (${table.dailyRuns} IS NULL AND ${table.expiresAt} IS NULL)`),
+  // Policies apply to Projects and Agent access; resource grants carry their own permissions.
+  check('grants_policy_scope', sql`(${table.policyId} IS NOT NULL) = (${table.channelId} IS NULL AND ${table.mailboxId} IS NULL AND ${table.gadgetId} IS NULL AND ${table.gadgetVersionId} IS NULL AND ${table.connectionId} IS NULL)`),
+  // Channel: a Role may send, attach files or start Live (sendMessages, attachFiles, startLive).
+  check('grants_channel', sql`${table.channelId} IS NULL OR (${table.roleId} IS NOT NULL AND (${table.permissions} & ~112) = 0)`),
+  // Mailbox: a Member reads (readMail), sends (+ sendMail) or manages it (+ manageChannels).
+  check('grants_mailbox', sql`${table.mailboxId} IS NULL OR (${table.memberId} IS NOT NULL AND ${table.permissions} IN (536870912, 1610612736, 1610612738))`),
+  // Apps: a Role may use a draft or a published version (useGadgets).
+  check('grants_gadget', sql`(${table.gadgetId} IS NULL AND ${table.gadgetVersionId} IS NULL) OR (${table.roleId} IS NOT NULL AND ${table.permissions} = 1024)`),
+  // MCP connection: a Member, Agent or Role may use it (useExternalTools).
+  check('grants_connection', sql`${table.connectionId} IS NULL OR ${table.permissions} = 33554432`),
+  uniqueIndex('grants_member_identity').on(table.memberId, sql`coalesce(${table.agentId},'')`, sql`coalesce(${table.projectId},'')`, table.policyId).where(sql`${table.memberId} IS NOT NULL AND ${table.policyId} IS NOT NULL`),
+  uniqueIndex('grants_role_identity').on(table.roleId, sql`coalesce(${table.agentId},'')`, sql`coalesce(${table.projectId},'')`, table.policyId).where(sql`${table.roleId} IS NOT NULL AND ${table.policyId} IS NOT NULL`),
+  uniqueIndex('grants_channel_identity').on(table.channelId, table.roleId).where(sql`${table.channelId} IS NOT NULL`),
+  uniqueIndex('grants_mailbox_identity').on(table.mailboxId, table.memberId).where(sql`${table.mailboxId} IS NOT NULL`),
+  uniqueIndex('grants_gadget_identity').on(table.gadgetId, table.roleId).where(sql`${table.gadgetId} IS NOT NULL`),
+  uniqueIndex('grants_gadget_version_identity').on(table.gadgetVersionId, table.roleId).where(sql`${table.gadgetVersionId} IS NOT NULL`),
+  uniqueIndex('grants_connection_identity').on(table.connectionId, sql`coalesce(${table.memberId},'')`, sql`coalesce(${table.roleId},'')`).where(sql`${table.connectionId} IS NOT NULL`),
   index('grants_member').on(table.memberId, table.agentId, table.projectId),
   index('grants_role').on(table.roleId, table.agentId, table.projectId),
   index('grants_project').on(table.projectId),
+  index('grants_member_mailbox').on(table.memberId, table.mailboxId).where(sql`${table.mailboxId} IS NOT NULL`),
 ])
 
 export const tasks = sqliteTable('tasks', {
@@ -1074,6 +1112,9 @@ export const tasks = sqliteTable('tasks', {
   /** The chat message this task was created from. No foreign key: the task outlives the message. */
   sourceChannelId: text('source_channel_id'),
   sourceMessageId: text('source_message_id'),
+  /** The pull request the task's agent published, and the latest preview found for it. */
+  pullUrl: text('pull_url'),
+  previewUrl: text('preview_url'),
   ...isoTimestamps(),
 }, table => [
   index('tasks_board_status_position_idx').on(table.boardId, table.status, table.position),

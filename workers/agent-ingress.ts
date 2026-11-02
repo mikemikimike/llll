@@ -39,7 +39,8 @@ export async function signalAgentsForMessage(env: L4Env, message: AgentIngressMe
   // Agent access lets someone without Use agents reach one Agent. Without either, nothing wakes.
   const access = await env.DB.prepare(
     `SELECT DISTINCT agent_id as agentId FROM grants
-     WHERE agent_id IS NOT NULL AND (member_id = ? OR role_id = ?) AND (expires_at IS NULL OR expires_at > ?)`,
+     WHERE agent_id IS NOT NULL AND (member_id = ? OR role_id = ?) AND (expires_at IS NULL OR expires_at > ?)
+       AND (project_id IS NULL OR project_id IN (SELECT id FROM projects WHERE archived_at IS NULL))`,
   ).bind(message.authorId, actor.roleId, new Date().toISOString()).all<{ agentId: string }>()
   const granted = new Set((access.results ?? []).map(row => row.agentId))
   if (!usesAgents && !granted.size) return

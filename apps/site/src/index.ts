@@ -68,8 +68,13 @@ function resumePath(data: { oauthNext?: 'create' | 'domain', updateRequest?: unk
   if (data.storageRequest) return '/create?' + new URLSearchParams({ tab: 'cloudflare', storage: '1', account: data.storageRequest.accountId, worker: data.storageRequest.workerName, server: data.storageRequest.origin }).toString()
   return '/create?tab=cloudflare' + (data.updateRequest ? '&resume=update' : '')
 }
-async function rateLimit(request: Request, env: WebEnv) {
-  const key = await digest((request.headers.get('cf-connecting-ip') || 'local') + ':' + Math.floor(Date.now() / 60000))
+/** A string field of a request body, for limits keyed on what is asked rather than who asks. */
+function bodyField(body: unknown, name: string) {
+  const value = body && typeof body === 'object' ? (body as Record<string, unknown>)[name] : undefined
+  return typeof value === 'string' ? value.slice(0, 128) : ''
+}
+async function rateLimit(request: Request, env: WebEnv, subject = request.headers.get('cf-connecting-ip') || 'local') {
+  const key = await digest(subject + ':' + Math.floor(Date.now() / 60000))
   const row = await env.DB.prepare('INSERT INTO rate_limits(key,count,expires_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1 RETURNING count').bind(key, Date.now() + 120000).first<{ count: number }>()
   if ((row?.count || 0) > 60) fail(429, 'Too many requests. Try again shortly.')
 }
@@ -90,8 +95,10 @@ async function handle(request: Request, env: WebEnv): Promise<Response> {
   // Servers call the relay from their Worker, without a browser Origin; the token and its own rate limit guard it.
   if (path === '/api/telegram/notify' && request.method === 'POST') return json(await relayTelegram(env, await input(request), fail))
   // Pairing from a browser: the Server registers and collects a code from its Worker; Telegram calls the webhook.
-  if (path === '/api/telegram/links' && request.method === 'POST') { await rateLimit(request, env); return json(await createTelegramLink(env, await input(request), fail)) }
-  if (path === '/api/telegram/links/claim' && request.method === 'POST') { await rateLimit(request, env); return json(await claimTelegramLink(env, await input(request), fail)) }
+  // Every Server's Worker reaches this relay from the same client address, so these two are limited
+  // per Server and per code instead: one pairing registers a code once and collects it every two seconds.
+  if (path === '/api/telegram/links' && request.method === 'POST') { const body = await input(request); await rateLimit(request, env, 'telegram-links:' + bodyField(body, 'serverId')); return json(await createTelegramLink(env, body, fail)) }
+  if (path === '/api/telegram/links/claim' && request.method === 'POST') { const body = await input(request); await rateLimit(request, env, 'telegram-claim:' + bodyField(body, 'code')); return json(await claimTelegramLink(env, body, fail)) }
   if (path === '/api/telegram/webhook' && request.method === 'POST') return json(await telegramWebhook(env, request, await input(request), fail))
   // A Server opened in Telegram asks from its own origin. Telegram's signed launch data, not a
   // cookie, proves who is asking, so any origin may call it.

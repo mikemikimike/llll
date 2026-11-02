@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { L4Env } from '../../workers/env'
 import { lizardCredential } from './lizard-connection'
+import { releaseFinishedTaskWork } from './compute-nodes'
 import { fail } from './cf'
 import { readLimitedStream } from '../../workers/inbound-email-signature'
 
@@ -41,7 +42,11 @@ export async function deleteUnusedLizardVolume(env: L4Env, workspaceId: string, 
   const nodes = await env.DB.prepare('SELECT id FROM compute_nodes WHERE name=?').bind('Lizard ' + workspaceId).all<{ id: string }>()
   if (nodes.results.some(node => node.id !== nodeId)) fail(409, 'lizard_volume_ownership', 'Lizard disk ownership is uncertain')
   if (nodeId && !nodes.results.some(node => node.id === nodeId)) fail(409, 'lizard_volume_ownership', 'Lizard compute node is unavailable')
-  if (nodeId && await env.DB.prepare("SELECT 1 FROM factory_workspaces WHERE node_id=? AND status<>'released' LIMIT 1").bind(nodeId).first()) fail(409, 'lizard_volume_in_use', 'Lizard disk contains retained task data')
+  if (nodeId) {
+    // Finished Tasks release their workspaces here too, not only when the Node asks before its next Task.
+    await releaseFinishedTaskWork(env, nodeId)
+    if (await env.DB.prepare("SELECT 1 FROM factory_workspaces WHERE node_id=? AND status<>'released' LIMIT 1").bind(nodeId).first()) fail(409, 'lizard_volume_in_use', 'Lizard disk holds work of unfinished Tasks. Mark finished Tasks Done or archive them, then delete the storage')
+  }
   const credential = await lizardCredential(env)
   let response: Response
   try { response = await fetch(`https://lizard.build/api/projects/${encodeURIComponent(credential.projectId)}/volumes/${encodeURIComponent(disk.id)}`, { method: 'DELETE', headers: { 'X-API-Key': credential.apiKey }, redirect: 'manual', signal: AbortSignal.timeout(30000) }) }

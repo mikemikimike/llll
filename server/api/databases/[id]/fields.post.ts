@@ -1,10 +1,10 @@
 import { getServerId } from '../../../../shared/server-id'
 import { z } from 'zod'
-import { DatabaseFieldTypes, normalizeDatabaseOptions } from '../../../../shared/database'
+import { DatabaseFieldTypes, hasFieldOptions, normalizeDatabaseOptions } from '../../../../shared/database'
 import { newId, nowIso } from '../../../../shared/ids'
 import { Permission } from '../../../../shared/permissions'
 import { cf, fail } from '../../../utils/cf'
-import { allocateDatabaseSlot, requireDatabase } from '../../../utils/database-data'
+import { allocateDatabaseSlot, databaseFieldConfig, requireDatabase } from '../../../utils/database-data'
 import { requireMember } from '../../../utils/guards'
 import { writeAudit } from '../../../utils/messages'
 import { parseBody } from '../../../utils/validate'
@@ -13,7 +13,9 @@ const bodySchema = z.object({
   name: z.string().trim().min(1).max(80),
   type: z.enum(DatabaseFieldTypes),
   options: z.array(z.string().max(80)).max(50).default([]),
-})
+  /** The database a relation field links to; it may be this one. */
+  relation: z.object({ databaseId: z.string().min(1) }).optional(),
+}).refine(body => body.type !== 'relation' || body.relation, 'A relation field needs a target database')
 
 export default defineEventHandler(async (event) => {
   const actor = await requireMember(event, (await getServerId(cf(event).env.DB)), Permission.manageDatabases)
@@ -31,13 +33,15 @@ export default defineEventHandler(async (event) => {
   ).bind(databaseId).first<{ position: number }>()
   const id = newId()
   const now = nowIso()
-  const options = body.type === 'select' ? normalizeDatabaseOptions(body.options) : []
+  const options = hasFieldOptions(body.type) ? normalizeDatabaseOptions(body.options) : []
+  const relation = body.type === 'relation' && body.relation ? { databaseId: (await requireDatabase(env, body.relation.databaseId)).id } : null
   const position = (positionRow?.position ?? 0) + 1024
+  const field = { id, databaseId, name: body.name, type: body.type, options, relation, position, createdAt: now, updatedAt: now }
   await env.DB.prepare(
     `INSERT INTO database_fields
      (id, database_id, name, type, slot, config_json, position, created_by, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(id, databaseId, body.name, body.type, slot, JSON.stringify({ options }), position, actor.user.id, now, now).run()
+  ).bind(id, databaseId, body.name, body.type, slot, databaseFieldConfig(field), position, actor.user.id, now, now).run()
   await writeAudit(env, { serverId: (await getServerId(cf(event).env.DB)), actorId: actor.user.id, action: 'database_field.create', targetType: 'database_field', targetId: id, meta: { databaseId, name: body.name, type: body.type } })
-  return { field: { id, databaseId, name: body.name, type: body.type, options, position, createdAt: now, updatedAt: now } }
+  return { field }
 })

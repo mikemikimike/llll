@@ -1,4 +1,4 @@
-FROM node:26.12.0-bookworm-slim AS build
+FROM node:26.13.0-bookworm-slim AS build
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     npm install --global --ignore-scripts pnpm@10.30.3
@@ -15,7 +15,7 @@ RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     pnpm --config.inject-workspace-packages=true --filter @llll/agent-runtime deploy --prod /out
 
-FROM node:26.12.0-bookworm-slim
+FROM node:26.13.0-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates tini && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/agent
 COPY --from=build /out ./
