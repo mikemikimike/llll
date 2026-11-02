@@ -131,9 +131,9 @@ Stop the stack, then copy both data volumes and `.env`. The names below assume t
 
 ```bash
 docker compose stop
-docker run --rm -v llll_rustfs-data:/from -v "$PWD":/to alpine:3.22 \
+docker run --rm -v llll_rustfs-data:/from -v "$PWD":/to alpine:3.24 \
   tar -C /from -czf /to/rustfs-data.tgz .
-docker run --rm -v llll_celld-data:/from -v "$PWD":/to alpine:3.22 \
+docker run --rm -v llll_celld-data:/from -v "$PWD":/to alpine:3.24 \
   tar -C /from -czf /to/celld-data.tgz .
 docker compose start
 ```

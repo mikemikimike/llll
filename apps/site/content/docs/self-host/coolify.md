@@ -49,7 +49,7 @@ This is [`self-host/coolify/docker-compose.yaml`](https://github.com/inchidev/ll
 
 services:
   rustfs-perms:
-    image: alpine:3.22
+    image: alpine:3.24
     user: "0:0"
     restart: "no"
     volumes:
@@ -60,7 +60,7 @@ services:
       - chown -R 10001:10001 /data
 
   rustfs:
-    image: rustfs/rustfs:1.0.3
+    image: rustfs/rustfs:1.0.4
     restart: always
     depends_on:
       rustfs-perms:
@@ -82,7 +82,7 @@ services:
       start_period: 20s
 
   bucket-init:
-    image: amazon/aws-cli:2.38.5
+    image: amazon/aws-cli:2.39.2
     restart: "no"
     depends_on:
       rustfs:

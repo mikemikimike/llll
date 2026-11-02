@@ -430,7 +430,7 @@ backup_stack() {
   local keep
   keep=$(get_env LLLL_BACKUP_KEEP); keep=${keep:-7}
   [[ $keep =~ ^[0-9]+$ && $keep -ge 1 ]] || fail 'LLLL_BACKUP_KEEP must be >= 1'
-  docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null
+  docker image inspect alpine:3.24 >/dev/null 2>&1 || docker pull alpine:3.24 >/dev/null
   mkdir -p "$backup_dir"; chmod 700 "$backup_dir"
   work=$(mktemp -d "$backup_dir/.partial-XXXXXXXX")
   archive="$backup_dir/llll-backup-$project-$(date -u +%Y%m%dT%H%M%S)-$(openssl rand -hex 4).tar.gz"
@@ -438,7 +438,7 @@ backup_stack() {
   compose stop >/dev/null
   for file in .env .llll-managed llll-compose.yml compose.vps.yml Caddyfile Caddyfile.vps llll-release.json llll; do cp -p "$dir/$file" "$work/$file"; done
   for key in rustfs-data celld-data caddy-data caddy-config; do
-    docker run --rm --network none --read-only --mount "type=volume,src=${project}_$key,dst=/source,readonly" alpine:3.22 tar -C /source -cf - . > "$work/$key.tar"
+    docker run --rm --network none --read-only --mount "type=volume,src=${project}_$key,dst=/source,readonly" alpine:3.24 tar -C /source -cf - . > "$work/$key.tar"
   done
   (cd "$work"; sha256sum .env .llll-managed llll-compose.yml compose.vps.yml Caddyfile Caddyfile.vps llll-release.json llll ./*.tar > SHA256SUMS; tar -czf "$archive.partial" .)
   chmod 600 "$archive.partial"
@@ -470,10 +470,10 @@ restore_volumes() {
   check_owned_volumes
   for key in rustfs-data celld-data caddy-data caddy-config; do
     if ! docker volume inspect "${project}_$key" >/dev/null 2>&1; then docker volume create --label "com.docker.compose.project=$project" --label "com.docker.compose.volume=$key" "${project}_$key" >/dev/null; fi
-    docker run --rm --network none --read-only --mount "type=volume,src=${project}_$key,dst=/data" alpine:3.22 sh -c 'test -z "$(ls -A /data)"' || fail "Restore requires empty volume ${project}_$key"
+    docker run --rm --network none --read-only --mount "type=volume,src=${project}_$key,dst=/data" alpine:3.24 sh -c 'test -z "$(ls -A /data)"' || fail "Restore requires empty volume ${project}_$key"
   done
   for key in rustfs-data celld-data caddy-data caddy-config; do
-    docker run --rm -i --network none --read-only --mount "type=volume,src=${project}_$key,dst=/data" alpine:3.22 tar -C /data -xf - < "$stage/restore/$key.tar"
+    docker run --rm -i --network none --read-only --mount "type=volume,src=${project}_$key,dst=/data" alpine:3.24 tar -C /data -xf - < "$stage/restore/$key.tar"
   done
 }
 restore_files() {
@@ -573,7 +573,7 @@ apply_upgrade() {
   docker load -i "$stage/llll-runtime-linux-amd64.tar.gz" >/dev/null
   [[ $(docker image inspect "llll:$pinned_version" --format '{{.Os}}/{{.Architecture}}') == linux/amd64 ]] || fail 'Runtime image architecture mismatch'
   # Fetch the helper before stopping the Server; backup/rollback work offline.
-  docker image inspect alpine:3.22 >/dev/null 2>&1 || docker pull alpine:3.22 >/dev/null
+  docker image inspect alpine:3.24 >/dev/null 2>&1 || docker pull alpine:3.24 >/dev/null
   backup_stack
   local result
   set +e

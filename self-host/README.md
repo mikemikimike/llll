@@ -82,9 +82,9 @@ The names below assume the raw Compose project `llll`. The local launcher prints
 
 ```bash
 docker compose stop
-docker run --rm -v llll_rustfs-data:/from -v "$PWD":/to alpine:3.22 \
+docker run --rm -v llll_rustfs-data:/from -v "$PWD":/to alpine:3.24 \
   tar -C /from -czf /to/rustfs-data.tgz .
-docker run --rm -v llll_celld-data:/from -v "$PWD":/to alpine:3.22 \
+docker run --rm -v llll_celld-data:/from -v "$PWD":/to alpine:3.24 \
   tar -C /from -czf /to/celld-data.tgz .
 docker compose start
 ```
