@@ -21,14 +21,19 @@ export function useDocumentDraft(
   const pending = new Map<string, Promise<boolean>>()
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const draft = computed(() => document.value ? drafts.get(document.value.id) : undefined)
-  const isDirty = (value: Draft) => (value.title.trim() || 'Untitled') !== value.savedTitle || value.content !== value.savedContent
+  // A new document is stored as "Untitled" (or "Untitled 2", …) so it has a name in lists; the editor
+  // shows that as an empty field so the first keystroke replaces it. Leaving it empty keeps the stored name.
+  const isGeneratedTitle = (title: string) => /^Untitled(?: \d+)?$/.test(title)
+  const editableTitle = (title: string) => isGeneratedTitle(title) ? '' : title
+  const effectiveTitle = (value: Draft) => value.title.trim() || (isGeneratedTitle(value.savedTitle) ? value.savedTitle : 'Untitled')
+  const isDirty = (value: Draft) => effectiveTitle(value) !== value.savedTitle || value.content !== value.savedContent
 
   watch(document, (value) => {
     if (!value) return
     const existing = drafts.get(value.id)
     if (existing && (isDirty(existing) || existing.saving)) return
     const next = {
-      id: value.id, title: value.title, content: value.content,
+      id: value.id, title: editableTitle(value.title), content: value.content,
       savedTitle: value.title, savedContent: value.content, version: value.version,
       saving: false, error: null,
     }
@@ -48,7 +53,7 @@ export function useDocumentDraft(
       value.error = null
       try {
         while (isDirty(value)) {
-          const title = value.title.trim() || 'Untitled'
+          const title = effectiveTitle(value)
           const content = value.content
           const saved = await persist(value.id, { title, content, version: value.version })
           value.version = saved.version
@@ -104,7 +109,7 @@ export function useDocumentDraft(
       clearTimeout(timers.get(value.id))
       timers.delete(value.id)
       drafts.set(value.id, {
-        id: value.id, title: value.title, content: value.content,
+        id: value.id, title: editableTitle(value.title), content: value.content,
         savedTitle: value.title, savedContent: value.content, version: value.version,
         saving: false, error: null,
       })

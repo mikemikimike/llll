@@ -53,6 +53,23 @@ describe('document drafts', () => {
     scope.stop()
   })
 
+  it('opens a generated Untitled name as an empty field and keeps it until the member types', async () => {
+    const scope = effectScope()
+    const source = ref<DocumentDTO | null>({ ...document('a'), title: 'Untitled 3' })
+    const persist = vi.fn().mockImplementation(async (_id, patch) => ({ ...document('a', 2), ...patch, version: 2 }))
+    const draft = scope.run(() => useDocumentDraft(source, persist, saved => { source.value = saved }))!
+    expect(draft.title.value).toBe('')
+    expect(draft.dirty.value).toBe(false)
+    draft.content.value = 'Notes'
+    expect(await draft.save()).toBe(true)
+    expect(persist).toHaveBeenCalledExactlyOnceWith('a', { title: 'Untitled 3', content: 'Notes', version: 1 })
+    draft.title.value = 'Plan'
+    expect(await draft.save()).toBe(true)
+    expect(persist).toHaveBeenLastCalledWith('a', { title: 'Plan', content: 'Notes', version: 2 })
+    expect(draft.title.value).toBe('Plan')
+    scope.stop()
+  })
+
   it('retains drafts and stops retries after a conflict', async () => {
     vi.useFakeTimers()
     const scope = effectScope()
