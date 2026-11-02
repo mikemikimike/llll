@@ -167,9 +167,18 @@ export type DatabaseFieldDTO = {
   name: string
   type: DatabaseFieldType
   options: string[]
+  /** The database a relation field points at; null for every other type. */
+  relation: { databaseId: string } | null
   position: number
   createdAt: string
   updatedAt: string
+}
+
+/** What a relation value shows: the linked record's title and where it lives. */
+export type LinkedRecordDTO = {
+  id: string
+  databaseId: string
+  title: string
 }
 
 export type DatabaseItemDTO = {
@@ -221,6 +230,8 @@ export type DatabasePageDTO = {
   pageSize: number
   /** Total records per board group. The empty key represents records without a value. */
   groupCounts?: Record<string, number>
+  /** Every record the loaded records' relation fields point at, by id. */
+  linked: Record<string, LinkedRecordDTO>
 }
 
 export type DocumentDTO = {

@@ -85,9 +85,9 @@ export function agentTools(env: L4Env, authorization: AuthorizationContext, sche
   }
   add('update_task', ServerAction.writeTasks, z.object({ taskId: z.string().min(1), title: z.string().min(1).max(160).optional(), description: z.string().max(12000).optional(), status: z.enum(['backlog', 'ready', 'review', 'done', 'failed']).optional() }),
     'Update an authorized task.', async ({ taskId, ...patch }) => { await scopedTask(taskId); return { task: await updateTask(env, authorization, taskId, patch, schedule) } })
-  add('list_tables', ServerAction.readRecords, z.object({}), 'Discover authorized table IDs, fields and saved views without reading records.', async () => ({ tables: await listAuthorizedTables(env, authorization) }))
+  add('list_tables', ServerAction.readRecords, z.object({}), 'Discover authorized table IDs, fields and saved views without reading records. Field types: text, number, boolean, date, select, multi_select, url, email, phone, person (member IDs) and relation (record IDs of the field’s relation.databaseId).', async () => ({ tables: await listAuthorizedTables(env, authorization) }))
   add('list_data', ServerAction.readDocuments, z.object({}), 'Discover authorized tables and documents.', async () => listAuthorizedDataResources(env, authorization))
-  add('create_table', ServerAction.manageData, createTableSchema, 'Create a table with typed fields when the role permits new tables. Include source URL fields for research evidence.', input => createTable(env, authorization, input))
+  add('create_table', ServerAction.manageData, createTableSchema, 'Create a table with typed fields when the role permits new tables. Include url fields for research evidence. A relation field names its target database, or "self" for this table.', input => createTable(env, authorization, input))
   if (run) add('execute_task', ServerAction.executeTasks, z.object({ taskId: z.string().min(1) }),
     'Start a bounded attempt for a task assigned to you, in this conversation. Subtasks inherit the original authority and computer limits. Maximum nesting: two.', async ({ taskId }) => {
       const mandate = JSON.parse(run.mandateJson) as RunMandate
@@ -107,9 +107,9 @@ export function agentTools(env: L4Env, authorization: AuthorizationContext, sche
   add('update_document', ServerAction.writeDocuments, z.object({ documentId: z.string().min(1), title: z.string().min(1).max(160).optional(), content: z.string().max(100000).optional(), version: z.number().int().positive() }),
     'Update an authorized document using its current version.', async ({ documentId, ...input }) => ({ document: await updateDocument(env, authorization, documentId, input) }))
   add('read_records', ServerAction.readRecords, readRecordsSchema,
-    'Read authorized table fields and records without saved view filters by default. Supply viewId to apply a saved view, or search/pageSize to page results. Fields use semantic IDs.', async ({ databaseId, page, ...options }) => readRecords(env, authorization, databaseId, page, options))
+    'Read authorized table fields and records without saved view filters by default. Supply viewId to apply a saved view, or search/pageSize to page results. Fields use semantic IDs; relation values are record IDs with their titles in `linked`.', async ({ databaseId, page, ...options }) => readRecords(env, authorization, databaseId, page, options))
   add('create_record', ServerAction.writeRecords, createRecordSchema.extend({ databaseId: z.string().min(1) }),
-    'Create a record in an authorized table. This cannot change table structure.', async ({ databaseId, ...input }) => ({ item: await createRecord(env, authorization, databaseId, input) }))
+    'Create a record in an authorized table. This cannot change table structure. List fields (multi_select, person, relation) take arrays.', async ({ databaseId, ...input }) => ({ item: await createRecord(env, authorization, databaseId, input) }))
   add('update_record', ServerAction.writeRecords, updateRecordSchema.safeExtend({ recordId: z.string().min(1) }),
     'Update an authorized record using its current version.', async ({ recordId, ...input }) => ({ item: await updateRecord(env, authorization, recordId, input) }))
   // Agents draft Apps; giving access and publishing stay with a person in Apps.

@@ -3,9 +3,10 @@ import { navigateTo, errorMessage } from '#imports'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { Permission } from '~~/shared/permissions'
 import { refDebounced } from '@vueuse/core'
-import { DatabaseColumnWidth, DatabaseFieldTypes, DatabaseSlotCounts, DatabaseViewFilterOperators, DatabaseViewLayouts, defaultDatabaseViewConfig, type DatabaseFieldType, type DatabaseValue, type DatabaseViewFilter, type DatabaseViewFilterOperator, type DatabaseViewLayout, type DatabaseViewSort } from '~~/shared/database'
+import { DatabaseColumnWidth, DatabaseSlotCounts, databaseSlotPool, defaultDatabaseViewConfig, hasFieldOptions, type DatabaseFieldType, type DatabaseValue, type DatabaseViewConfig, type DatabaseViewFilter, type DatabaseViewLayout, type DatabaseViewSort } from '~~/shared/database'
 import { databasePath } from '~~/shared/paths'
-import type { DataResourcesDTO, DatabaseDTO, DatabaseFieldDTO, DatabaseItemDTO, DatabasePageDTO, DatabaseViewDTO } from '~~/shared/types'
+import type { DataResourcesDTO, DatabaseDTO, DatabaseFieldDTO, DatabaseItemDTO, DatabasePageDTO, DatabaseViewDTO, LinkedRecordDTO, MemberDTO, PublicUser } from '~~/shared/types'
+import { fieldIcon, fieldTypeChoices, fieldTypeLabel, filterComplete, filterNeedsValue, filterValueFor, viewIcon, viewLayoutChoices, type EditableViewFilter } from '~/utils/database-fields'
 
 definePageMeta({ layout: 'server', middleware: ['auth', 'manage-databases'] })
 
@@ -29,6 +30,11 @@ const selectedDatabaseId = computed({
 const selectedViewId = computed({
   get: () => String(route.query.view || '') || null,
   set: value => void navigateTo(databasePath(selectedDatabaseId.value, showArchived.value, value)),
+})
+/** A record opened as a page keeps its id in the URL, so a link to it opens it. */
+const selectedRecordId = computed({
+  get: () => String(route.query.record || '') || null,
+  set: value => void navigateTo(databasePath(selectedDatabaseId.value, showArchived.value, selectedViewId.value, value), { replace: Boolean(value) === Boolean(selectedRecordId.value) }),
 })
 const resourcesQ = useQuery({
   queryKey: computed(() => ['data-resources', serverId.value]),
@@ -82,6 +88,19 @@ const activeDatabase = computed<DatabaseDTO | null>(() => databaseQ.data.value
   : null)
 const views = computed(() => databaseQ.data.value?.views ?? [])
 const activeView = computed(() => databaseQ.data.value?.view ?? null)
+const membersQ = useQuery({
+  queryKey: computed(() => ['members', serverId.value]),
+  queryFn: () => api<{ members: MemberDTO[] }>(`/api/servers/${serverId.value}/members`),
+  enabled: computed(() => Boolean(serverId.value)),
+})
+const members = computed(() => membersQ.data.value?.members ?? [])
+const membersById = computed<Record<string, PublicUser>>(() => Object.fromEntries(members.value.map(member => [member.user.id, member.user])))
+/** Titles of linked records: the page's, plus records picked here before the next load. */
+const linkedCache = ref<Record<string, LinkedRecordDTO>>({})
+const linked = computed<Record<string, LinkedRecordDTO>>(() => ({ ...databaseQ.data.value?.linked, ...linkedCache.value }))
+function rememberLinked(records: LinkedRecordDTO[]) {
+  if (records.length) linkedCache.value = { ...linkedCache.value, ...Object.fromEntries(records.map(record => [record.id, record])) }
+}
 const visibleFields = computed(() => {
   const fields = activeDatabase.value?.fields ?? []
   const visible = activeView.value?.config.visibleFieldIds
@@ -209,13 +228,15 @@ const showFieldForm = ref(false)
 const fieldName = ref('')
 const fieldType = ref<DatabaseFieldType>('text')
 const fieldOptions = ref('')
+const fieldRelationDatabaseId = ref('')
 const editingFieldId = ref<string | null>(null)
+/** Databases a relation may point at, this one included. */
+const relationTargets = computed(() => allDatabases.value.filter(database => !database.archivedAt).map(database => ({ label: database.name, value: database.id })))
 const showViewForm = ref(false)
 const editingViewId = ref<string | null>(null)
 const viewName = ref('')
 const viewLayout = ref<DatabaseViewLayout>('table')
 const viewVisibleFieldIds = ref<string[]>([])
-type EditableViewFilter = { fieldId: string, operator: DatabaseViewFilterOperator, value: string }
 const viewSorts = ref<DatabaseViewSort[]>([])
 const viewFilters = ref<EditableViewFilter[]>([])
 const viewGroupFieldId = ref('')
@@ -224,14 +245,7 @@ const showConfirm = ref(false)
 const confirmTitle = ref('')
 const confirmAction = shallowRef<null | (() => Promise<void>)>(null)
 
-const fieldTypeOptions = DatabaseFieldTypes.map(type => ({
-  label: type === 'boolean' ? 'Checkbox' : type.charAt(0).toUpperCase() + type.slice(1),
-  value: type,
-}))
-const sortOptions = computed(() => [
-  { label: 'Title', value: 'title' },
-  ...(activeDatabase.value?.fields ?? []).map(field => ({ label: field.name, value: field.id })),
-])
+const fields = computed(() => activeDatabase.value?.fields ?? [])
 const loadedItemIds = computed(() => new Set(activeDatabase.value?.items.map(item => item.id) ?? []))
 /** Records created here that the view's filters leave out; they show until you leave. */
 const outsideView = computed(() => [...createdHere.value.values()].filter(item => !loadedItemIds.value.has(item.id)))
@@ -240,7 +254,6 @@ const visibleItems = computed(() => [...activeDatabase.value?.items ?? [], ...ou
 const outsideViewIds = computed(() => new Set(activeView.value?.config.filters.length ? outsideView.value.map(item => item.id) : []))
 const selectFields = computed(() => activeDatabase.value?.fields.filter(field => field.type === 'select') ?? [])
 const dateFields = computed(() => activeDatabase.value?.fields.filter(field => field.type === 'date') ?? [])
-const layoutOptions = DatabaseViewLayouts.map(layout => ({ label: layout.charAt(0).toUpperCase() + layout.slice(1), value: layout }))
 const boardField = computed(() => activeDatabase.value?.fields.find(field => field.id === activeView.value?.config.groupFieldId) ?? null)
 const boardGroups = computed(() => {
   const field = boardField.value
@@ -261,38 +274,106 @@ const calendarDays = computed(() => {
   })
 })
 const calendarTitle = computed(() => calendarCursor.value.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))
-function filterField(filter: EditableViewFilter) {
-  return activeDatabase.value?.fields.find(field => field.id === filter.fieldId) ?? null
-}
-function filterOperatorOptions(filter: EditableViewFilter) {
-  const type = filter.fieldId === 'title' ? 'text' : filterField(filter)?.type
-  return DatabaseViewFilterOperators.filter((operator) => {
-    if (['equals', 'not_equals', 'is_empty', 'is_not_empty'].includes(operator)) return true
-    if (operator === 'contains') return type === 'text' || type === 'select'
-    if (operator === 'greater_than' || operator === 'less_than') return type === 'number'
-    return type === 'date'
-  }).map(operator => ({ label: operator.replaceAll('_', ' '), value: operator }))
-}
-function normalizeEditableFilter(filter: EditableViewFilter) {
-  const allowed = filterOperatorOptions(filter)
-  if (!allowed.some(option => option.value === filter.operator)) filter.operator = 'equals'
-  const field = filterField(filter)
-  if (field?.type === 'boolean' && !['true', 'false'].includes(filter.value)) filter.value = ''
-  if (filterUsesSelectChoice(filter) && !field?.options.includes(filter.value)) filter.value = ''
-}
-function filterNeedsValue(filter: EditableViewFilter) {
-  return !['is_empty', 'is_not_empty'].includes(filter.operator)
-}
-function filterUsesSelectChoice(filter: EditableViewFilter) {
-  return filterNeedsValue(filter) && filterField(filter)?.type === 'select' && filter.operator !== 'contains'
-}
 const canSaveView = computed(() => Boolean(
   viewName.value.trim()
-  && viewFilters.value.every(filter => filter.fieldId && (!filterNeedsValue(filter) || filter.value !== ''))
+  && viewFilters.value.every(filter => filterComplete(fields.value, filter))
   && viewSorts.value.every(sort => sort.fieldId)
   && (viewLayout.value !== 'board' || viewGroupFieldId.value)
   && (viewLayout.value !== 'calendar' || viewDateFieldId.value),
 ))
+
+/**
+ * Changes made from the toolbar save on their own, like Notion: a filter, a sort
+ * or a hidden property applies as soon as it is complete. A concurrent change to
+ * the view is reloaded once and this change applied on top of it.
+ */
+async function patchViewConfig(partial: Partial<DatabaseViewConfig>, retry = true): Promise<boolean> {
+  const view = activeView.value
+  if (!view) return false
+  try {
+    const { view: saved } = await api<{ view: DatabaseViewDTO }>(`/api/database-views/${view.id}`, {
+      method: 'PATCH',
+      body: { config: { ...view.config, columnWidths: { ...columnWidths.value }, ...partial }, version: view.version },
+    })
+    qc.setQueryData<DatabasePageDTO>(databaseKey.value, old => old
+      ? { ...old, view: old.view.id === saved.id ? saved : old.view, views: old.views.map(candidate => candidate.id === saved.id ? saved : candidate) }
+      : old)
+    void qc.invalidateQueries({ queryKey: ['database', activeDatabaseSummary.value?.id] })
+    return true
+  }
+  catch (error) {
+    if (retry && isConflict(error)) {
+      await databaseQ.refetch()
+      return patchViewConfig(partial, false)
+    }
+    toast.add({ title: errorMessage(error), color: 'error' })
+    return false
+  }
+}
+const quickFilters = ref<EditableViewFilter[]>([])
+const quickSorts = ref<DatabaseViewSort[]>([])
+const quickFiltersOpen = ref(false)
+const quickSortsOpen = ref(false)
+const propertiesOpen = ref(false)
+watch(quickFiltersOpen, (open) => {
+  if (open) quickFilters.value = editableFilters(activeView.value?.config.filters ?? [])
+})
+watch(quickSortsOpen, (open) => {
+  if (open) quickSorts.value = (activeView.value?.config.sorts ?? []).map(sort => ({ ...sort }))
+})
+let quickTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleQuickSave(partial: () => Partial<DatabaseViewConfig>) {
+  clearTimeout(quickTimer)
+  quickTimer = setTimeout(() => void patchViewConfig(partial()), 500)
+}
+watch(quickFilters, () => {
+  if (!quickFiltersOpen.value) return
+  // An unfinished row waits; the others apply right away.
+  const complete = quickFilters.value.filter(filter => filterComplete(fields.value, filter))
+  const next = complete.map(toViewFilter)
+  if (JSON.stringify(next) === JSON.stringify(activeView.value?.config.filters ?? [])) return
+  scheduleQuickSave(() => ({ filters: next }))
+}, { deep: true })
+watch(quickSorts, () => {
+  if (!quickSortsOpen.value) return
+  const next = quickSorts.value.map(sort => ({ ...sort }))
+  if (JSON.stringify(next) === JSON.stringify(activeView.value?.config.sorts ?? [])) return
+  scheduleQuickSave(() => ({ sorts: next }))
+}, { deep: true })
+function editableFilters(filters: DatabaseViewFilter[]): EditableViewFilter[] {
+  return filters.map(filter => ({ fieldId: filter.fieldId, operator: filter.operator, value: filter.value === undefined || filter.value === null ? '' : String(filter.value) }))
+}
+function toViewFilter(filter: EditableViewFilter): DatabaseViewFilter {
+  return { fieldId: filter.fieldId, operator: filter.operator, ...(filterNeedsValue(filter) ? { value: filterValueFor(fields.value, filter) } : {}) }
+}
+function setFieldVisible(fieldId: string, visible: boolean) {
+  const current = activeView.value?.config.visibleFieldIds ?? fields.value.map(field => field.id)
+  const next = visible ? [...new Set([...current, fieldId])] : current.filter(id => id !== fieldId)
+  void patchViewConfig({ visibleFieldIds: next.length === fields.value.length ? null : next })
+}
+
+/** The record open as a page: from the loaded page when it is there, otherwise on its own. */
+const recordQ = useQuery({
+  queryKey: computed(() => ['database-item', selectedRecordId.value] as const),
+  queryFn: () => api<{ item: DatabaseItemDTO; linked: Record<string, LinkedRecordDTO> }>(`/api/database-items/${selectedRecordId.value}`),
+  enabled: computed(() => Boolean(selectedRecordId.value) && !visibleItems.value.some(item => item.id === selectedRecordId.value)),
+})
+watch(() => recordQ.data.value?.linked, records => { if (records) rememberLinked(Object.values(records)) })
+const panelItem = computed(() => {
+  const id = selectedRecordId.value
+  if (!id) return null
+  return visibleItems.value.find(item => item.id === id) ?? (recordQ.data.value?.item.id === id ? rowEdits.display(recordQ.data.value.item) : null)
+})
+const panelOpen = computed({
+  get: () => Boolean(selectedRecordId.value),
+  set: (open) => { if (!open) selectedRecordId.value = null },
+})
+function openRecord(item: DatabaseItemDTO) {
+  selectedRecordId.value = item.id
+}
+function updateRecord(item: DatabaseItemDTO, patch: { title?: string; values?: Record<string, DatabaseValue> }) {
+  rowEdits.update(item, patch)
+}
 const draggedItemId = ref<string | null>(null)
 
 watch([databases, selectedDatabaseId], ([list, id]) => {
@@ -303,7 +384,8 @@ watch([databases, selectedDatabaseId], ([list, id]) => {
 watch([activeDatabaseSummary, selectedViewId], ([database, viewId]) => {
   const first = database?.views[0]
   if (database && first && (!viewId || !database.views.some(view => view.id === viewId))) {
-    void navigateTo(databasePath(database.id, showArchived.value, first.id), { replace: true })
+    // A link to one record arrives without a view; keep the record while the first view is added.
+    void navigateTo(databasePath(database.id, showArchived.value, first.id, selectedRecordId.value), { replace: true })
   }
 }, { immediate: true })
 watch([selectedDatabaseId, selectedViewId, debouncedSearch], () => { page.value = 1 })
@@ -313,12 +395,6 @@ watch(() => nav.createDatabaseOpen.value, (open) => {
   nav.createDatabaseOpen.value = false
   openCreateDatabase()
 })
-
-function displayValue(value: DatabaseValue | undefined): string {
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
-  return String(value)
-}
 
 function inputValue(event: Event): string {
   return (event.target as HTMLInputElement).value
@@ -402,6 +478,7 @@ function openCreateField() {
   fieldName.value = ''
   fieldType.value = 'text'
   fieldOptions.value = ''
+  fieldRelationDatabaseId.value = activeDatabase.value.id
   showFieldForm.value = true
 }
 
@@ -410,18 +487,30 @@ function openEditField(field: DatabaseFieldDTO) {
   fieldName.value = field.name
   fieldType.value = field.type
   fieldOptions.value = field.options.join(', ')
+  fieldRelationDatabaseId.value = field.relation?.databaseId ?? ''
   showFieldForm.value = true
 }
+
+/** What a new field sends: its options for a select, its target for a relation. */
+function fieldBody(name: string) {
+  const options = fieldOptions.value.split(',').map(option => option.trim()).filter(Boolean)
+  return {
+    name,
+    type: fieldType.value,
+    options: hasFieldOptions(fieldType.value) ? options : [],
+    ...(fieldType.value === 'relation' ? { relation: { databaseId: fieldRelationDatabaseId.value } } : {}),
+  }
+}
+const fieldFormComplete = computed(() => Boolean(fieldName.value.trim()) && (fieldType.value !== 'relation' || Boolean(fieldRelationDatabaseId.value)))
 
 async function saveField() {
   const database = activeDatabase.value
   const name = fieldName.value.trim()
   if (!database || !name) return
-  const options = fieldOptions.value.split(',').map(option => option.trim()).filter(Boolean)
   const editing = editingFieldId.value
   const body = editing
-    ? { name, ...(fieldType.value === 'select' ? { options } : {}) }
-    : { name, type: fieldType.value, options }
+    ? { name, ...(hasFieldOptions(fieldType.value) ? { options: fieldBody(name).options } : {}) }
+    : fieldBody(name)
   const ok = await mutate(
     () => editing
       ? api(`/api/database-fields/${editing}`, { method: 'PATCH', body })
@@ -468,31 +557,10 @@ function openEditView(view: DatabaseViewDTO) {
   viewLayout.value = view.layout
   viewVisibleFieldIds.value = view.config.visibleFieldIds === null ? fields.map(field => field.id) : [...view.config.visibleFieldIds]
   viewSorts.value = view.config.sorts.map(sort => ({ ...sort }))
-  viewFilters.value = view.config.filters.map(filter => ({
-    fieldId: filter.fieldId,
-    operator: filter.operator,
-    value: filter.value === undefined || filter.value === null ? '' : String(filter.value),
-  }))
+  viewFilters.value = editableFilters(view.config.filters)
   viewGroupFieldId.value = view.config.groupFieldId ?? ''
   viewDateFieldId.value = view.config.dateFieldId ?? ''
   showViewForm.value = true
-}
-
-function filterValue(filter: EditableViewFilter): DatabaseValue {
-  const field = filterField(filter)
-  if (field?.type === 'number') return Number(filter.value)
-  if (field?.type === 'boolean') return filter.value === 'true'
-  return filter.value
-}
-
-function addViewFilter() {
-  if (viewFilters.value.length >= 8) return
-  viewFilters.value.push({ fieldId: 'title', operator: 'contains', value: '' })
-}
-
-function addViewSort() {
-  if (viewSorts.value.length >= 3) return
-  viewSorts.value.push({ fieldId: 'title', direction: 'asc' })
 }
 
 async function saveView() {
@@ -504,11 +572,7 @@ async function saveView() {
   const config = defaultDatabaseViewConfig()
   config.visibleFieldIds = viewVisibleFieldIds.value.length === allFieldIds.length ? null : [...viewVisibleFieldIds.value]
   config.sorts = viewSorts.value.map(sort => ({ ...sort }))
-  config.filters = viewFilters.value.map((filter): DatabaseViewFilter => ({
-    fieldId: filter.fieldId,
-    operator: filter.operator,
-    ...(filterNeedsValue(filter) ? { value: filterValue(filter) } : {}),
-  }))
+  config.filters = viewFilters.value.map(toViewFilter)
   config.groupFieldId = viewLayout.value === 'board' ? viewGroupFieldId.value || null : null
   config.dateFieldId = viewLayout.value === 'calendar' ? viewDateFieldId.value || null : null
   config.columnWidths = { ...current?.config.columnWidths }
@@ -640,31 +704,16 @@ async function updateTitle(item: DatabaseItemDTO, event: Event) {
   rowEdits.update(item, { title })
 }
 
-async function updateInput(item: DatabaseItemDTO, field: DatabaseFieldDTO, event: Event) {
-  const raw = inputValue(event)
-  const value: DatabaseValue = field.type === 'number' ? (raw === '' ? null : Number(raw)) : (raw || null)
-  if (item.values[field.id] === value) return
-  rowEdits.update(item, { values: { [field.id]: value } })
-}
-
 async function updateFieldValue(item: DatabaseItemDTO, field: DatabaseFieldDTO, value: DatabaseValue) {
-  if (item.values[field.id] === value) return
+  if (JSON.stringify(item.values[field.id] ?? null) === JSON.stringify(value ?? null)) return
   rowEdits.update(item, { values: { [field.id]: value } })
-}
-
-function selectValue(item: DatabaseItemDTO, field: DatabaseFieldDTO): string | null {
-  const value = item.values[field.id]
-  return typeof value === 'string' ? value : null
-}
-
-function updateSelectValue(item: DatabaseItemDTO, field: DatabaseFieldDTO, value: unknown) {
-  return updateFieldValue(item, field, typeof value === 'string' ? value : null)
 }
 
 function deleteItem(item: DatabaseItemDTO) {
   askConfirm(`Delete ${item.title}?`, async () => {
     const removed = await mutate(() => api(`/api/database-items/${item.id}`, { method: 'DELETE' }))
     if (!removed) return
+    if (selectedRecordId.value === item.id) selectedRecordId.value = null
     rowEdits.discard(item)
     if (createdHere.value.has(item.id)) {
       const next = new Map(createdHere.value)
@@ -690,10 +739,6 @@ async function confirmMutation() {
   confirmAction.value = null
 }
 
-function fieldTypeLabel(type: DatabaseFieldType) {
-  return type === 'boolean' ? 'Checkbox' : type.charAt(0).toUpperCase() + type.slice(1)
-}
-
 /** + in the table header: name, pick a type, and it is there. */
 const newFieldOpen = ref(false)
 watch(newFieldOpen, (open) => {
@@ -702,13 +747,13 @@ watch(newFieldOpen, (open) => {
   fieldName.value = ''
   fieldType.value = 'text'
   fieldOptions.value = ''
+  fieldRelationDatabaseId.value = activeDatabase.value?.id ?? ''
 })
 async function createFieldQuick() {
   const database = activeDatabase.value
   const name = fieldName.value.trim()
-  if (!database || !name) return
-  const options = fieldOptions.value.split(',').map(option => option.trim()).filter(Boolean)
-  const ok = await mutate(() => api(`/api/databases/${database.id}/fields`, { method: 'POST', body: { name, type: fieldType.value, options } }), 'Field added')
+  if (!database || !name || !fieldFormComplete.value) return
+  const ok = await mutate(() => api(`/api/databases/${database.id}/fields`, { method: 'POST', body: fieldBody(name) }), 'Field added')
   if (ok) newFieldOpen.value = false
 }
 
@@ -716,21 +761,6 @@ function rowMenu(item: DatabaseItemDTO) {
   return [[
     { label: 'Delete', icon: 'i-ph-trash', color: 'error' as const, onSelect: () => deleteItem(item) },
   ]]
-}
-
-function fieldIcon(type: DatabaseFieldType) {
-  if (type === 'number') return 'i-ph-hash'
-  if (type === 'boolean') return 'i-ph-check-square'
-  if (type === 'date') return 'i-ph-calendar-blank'
-  if (type === 'select') return 'i-ph-caret-circle-down'
-  return 'i-ph-text-t'
-}
-
-function viewIcon(layout: DatabaseViewLayout) {
-  if (layout === 'board') return 'i-ph-kanban'
-  if (layout === 'calendar') return 'i-ph-calendar-blank'
-  if (layout === 'list') return 'i-ph-list-bullets'
-  return 'i-ph-table'
 }
 
 function fieldMenu(field: DatabaseFieldDTO) {
@@ -807,25 +837,33 @@ function retryLoad() {
             <UButton v-if="!showArchived" color="neutral" variant="ghost" size="sm" icon="i-ph-plus" :disabled="!can(Permission.manageDatabases)" aria-label="Create view" @click="openCreateView" />
           </div>
           <div class="ms-auto flex items-center gap-1">
-            <UButton
-              v-if="activeView.config.filters.length"
-              color="primary"
-              variant="ghost"
-              size="sm"
-              icon="i-ph-funnel-simple"
-              :label="`${activeView.config.filters.length} ${activeView.config.filters.length === 1 ? 'filter' : 'filters'}`"
-              @click="openEditView(activeView)"
-            />
-            <UButton
-              v-if="activeView.config.sorts.length"
-              color="primary"
-              variant="ghost"
-              size="sm"
-              icon="i-ph-arrows-down-up"
-              :label="`${activeView.config.sorts.length} ${activeView.config.sorts.length === 1 ? 'sort' : 'sorts'}`"
-              @click="openEditView(activeView)"
-            />
-            <UInput v-model="search" size="sm" icon="i-ph-magnifying-glass" placeholder="Search" aria-label="Search this view" class="w-36 sm:w-48" />
+            <!-- Filter, Sort and Properties open in place and apply as you change them, like Notion. -->
+            <UPopover v-if="can(Permission.manageDatabases) && !showArchived" v-model:open="quickFiltersOpen" :content="{ align: 'end' }">
+              <UButton :color="activeView.config.filters.length ? 'primary' : 'neutral'" variant="ghost" size="sm" icon="i-ph-funnel-simple" :label="isMobile ? undefined : activeView.config.filters.length ? `${activeView.config.filters.length} ${activeView.config.filters.length === 1 ? 'filter' : 'filters'}` : 'Filter'" aria-label="Filters" />
+              <template #content><div class="w-[min(92vw,30rem)] p-3"><DataViewRules v-model:filters="quickFilters" :fields="fields" :members="members" show="filters" /></div></template>
+            </UPopover>
+            <UPopover v-if="can(Permission.manageDatabases) && !showArchived" v-model:open="quickSortsOpen" :content="{ align: 'end' }">
+              <UButton :color="activeView.config.sorts.length ? 'primary' : 'neutral'" variant="ghost" size="sm" icon="i-ph-arrows-down-up" :label="isMobile ? undefined : activeView.config.sorts.length ? `${activeView.config.sorts.length} ${activeView.config.sorts.length === 1 ? 'sort' : 'sorts'}` : 'Sort'" aria-label="Sorts" />
+              <template #content><div class="w-[min(92vw,28rem)] p-3"><DataViewRules v-model:sorts="quickSorts" :fields="fields" show="sorts" /></div></template>
+            </UPopover>
+            <UPopover v-if="can(Permission.manageDatabases) && !showArchived" v-model:open="propertiesOpen" :content="{ align: 'end' }">
+              <UButton color="neutral" variant="ghost" size="sm" icon="i-ph-sliders-horizontal" :label="isMobile ? undefined : 'Properties'" aria-label="Properties" />
+              <template #content>
+                <div class="w-64 p-2">
+                  <p class="px-2 pb-1 text-xs font-medium text-muted">Shown in this view</p>
+                  <ul v-if="fields.length">
+                    <li v-for="field in fields" :key="field.id" class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-elevated">
+                      <UIcon :name="fieldIcon(field.type)" class="size-4 shrink-0 text-dimmed" />
+                      <span class="min-w-0 flex-1 truncate text-sm">{{ field.name }}</span>
+                      <USwitch size="xs" :model-value="visibleFields.some(candidate => candidate.id === field.id)" :aria-label="`Show ${field.name}`" @update:model-value="setFieldVisible(field.id, Boolean($event))" />
+                    </li>
+                  </ul>
+                  <p v-else class="px-2 py-2 text-xs text-muted">No fields yet.</p>
+                  <UButton label="Add field" icon="i-ph-plus" color="neutral" variant="ghost" size="xs" class="mt-1" @click="propertiesOpen = false; openCreateField()" />
+                </div>
+              </template>
+            </UPopover>
+            <UInput v-model="search" size="sm" icon="i-ph-magnifying-glass" placeholder="Search" aria-label="Search this view" class="w-28 sm:w-44" />
             <UDropdownMenu v-if="!showArchived && can(Permission.manageDatabases)" :items="viewMenu">
               <UButton color="neutral" variant="ghost" size="sm" icon="i-ph-sliders-horizontal" aria-label="View options" />
             </UDropdownMenu>
@@ -866,23 +904,25 @@ function retryLoad() {
                     <template #content>
                       <form class="w-64 space-y-2 p-2" @submit.prevent="createFieldQuick">
                         <UInput v-model="fieldName" size="sm" placeholder="Field name" aria-label="Field name" autofocus class="w-full" />
-                        <div class="grid gap-0.5" role="radiogroup" aria-label="Field type">
+                        <div class="grid max-h-72 gap-0.5 overflow-y-auto" role="radiogroup" aria-label="Field type">
                           <button
-                            v-for="type in DatabaseFieldTypes"
-                            :key="type"
+                            v-for="choice in fieldTypeChoices"
+                            :key="choice.value"
                             type="button"
                             role="radio"
-                            :aria-checked="fieldType === type"
+                            :aria-checked="fieldType === choice.value"
                             class="flex items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm"
-                            :class="fieldType === type ? 'bg-accented text-highlighted' : 'text-default hover:bg-elevated'"
-                            @click="fieldType = type"
+                            :class="fieldType === choice.value ? 'bg-accented text-highlighted' : 'text-default hover:bg-elevated'"
+                            @click="fieldType = choice.value"
                           >
-                            <UIcon :name="fieldIcon(type)" class="size-4 text-muted" />
-                            {{ fieldTypeLabel(type) }}
+                            <UIcon :name="choice.icon" class="size-4 text-muted" />
+                            <span class="min-w-0 flex-1 truncate">{{ choice.label }}</span>
+                            <span class="truncate text-xs text-dimmed">{{ choice.hint }}</span>
                           </button>
                         </div>
-                        <UInput v-if="fieldType === 'select'" v-model="fieldOptions" size="sm" placeholder="Options, separated by commas" aria-label="Options" class="w-full" />
-                        <UButton type="submit" block size="sm" label="Add field" :loading="saving" :disabled="!fieldName.trim()" />
+                        <UInput v-if="hasFieldOptions(fieldType)" v-model="fieldOptions" size="sm" placeholder="Options, separated by commas" aria-label="Options" class="w-full" />
+                        <USelect v-if="fieldType === 'relation'" v-model="fieldRelationDatabaseId" size="sm" :items="relationTargets" placeholder="Related database" aria-label="Related database" class="w-full" />
+                        <UButton type="submit" block size="sm" label="Add field" :loading="saving" :disabled="!fieldFormComplete" />
                       </form>
                     </template>
                   </UPopover>
@@ -909,20 +949,20 @@ function retryLoad() {
                 </td>
                 <td class="df-cell sticky start-12 z-[2] border-b border-e border-default bg-default group-hover:bg-elevated/40">
                   <div :data-record-title="item.id">
-                    <UInput :model-value="item.title" variant="none" aria-label="Record title" :disabled="showArchived || !can(Permission.writeData)" class="w-full" :ui="{ base: 'h-9 px-3 font-medium text-highlighted', trailing: 'pe-2' }" @change="updateTitle(item, $event)">
-                      <template v-if="outsideViewIds.has(item.id)" #trailing>
-                        <UTooltip text="Doesn't match this view's filters. It hides when you leave the view.">
+                    <UInput :model-value="item.title" variant="none" aria-label="Record title" :disabled="showArchived || !can(Permission.writeData)" class="w-full" :ui="{ base: 'h-9 px-3 pe-16 font-medium text-highlighted', trailing: 'pe-1.5' }" @change="updateTitle(item, $event)">
+                      <template #trailing>
+                        <UTooltip v-if="outsideViewIds.has(item.id)" text="Doesn't match this view's filters. It hides when you leave the view.">
                           <UIcon name="i-ph-eye-slash" class="size-4 text-dimmed" aria-label="Outside this view's filters" />
                         </UTooltip>
+                        <!-- Open the record as a page, like Notion's OPEN on hover. -->
+                        <UButton label="Open" icon="i-ph-arrows-out-simple" size="xs" color="neutral" variant="soft" class="hidden group-hover:inline-flex pointer-coarse:inline-flex" :aria-label="`Open ${item.title}`" @click="openRecord(item)" />
                       </template>
                     </UInput>
                   </div>
                 </td>
                 <td v-for="field in visibleFields" :key="field.id" class="df-cell border-b border-e border-default group-hover:bg-elevated/40">
-                  <div class="flex h-9 items-center" :class="field.type === 'boolean' ? 'px-3' : ''">
-                    <UCheckbox v-if="field.type === 'boolean'" :model-value="Boolean(item.values[field.id])" :disabled="showArchived || !can(Permission.writeData)" :aria-label="field.name" @update:model-value="updateFieldValue(item, field, Boolean($event))" />
-                    <USelect v-else-if="field.type === 'select'" :model-value="selectValue(item, field) ?? undefined" variant="none" placeholder=" " :aria-label="field.name" :items="[{ label: 'None', value: null }, ...field.options.map(option => ({ label: option, value: option }))]" :disabled="showArchived || !can(Permission.writeData)" class="h-9 w-full min-w-0" :ui="{ base: 'h-9 px-3', trailingIcon: 'opacity-0 group-hover:opacity-100' }" @update:model-value="updateSelectValue(item, field, $event)" />
-                    <UInput v-else :model-value="displayValue(item.values[field.id])" variant="none" :aria-label="field.name" :type="field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'" :disabled="showArchived || !can(Permission.writeData)" class="w-full min-w-0" :ui="{ base: 'h-9 px-3' }" @change="updateInput(item, field, $event)" />
+                  <div class="flex min-h-9 items-center">
+                    <DataFieldEditor :field="field" :value="item.values[field.id]" :members="members" :linked="linked" :disabled="showArchived || !can(Permission.writeData)" cell @update="updateFieldValue(item, field, $event)" @linked="rememberLinked" />
                   </div>
                 </td>
                 <td class="border-b border-default" />
@@ -954,10 +994,10 @@ function retryLoad() {
 
         <div v-else-if="activeView.layout === 'list'" class="min-h-0 flex-1 overflow-y-auto p-3">
           <div class="divide-y divide-default rounded-lg border border-default">
-            <div v-for="item in visibleItems" :key="item.id" class="flex items-center gap-4 px-4 py-3 hover:bg-elevated">
-              <UInput :model-value="item.title" :data-record-title="item.id" variant="none" aria-label="Record title" :disabled="showArchived || !can(Permission.writeData)" class="min-w-48 flex-1" :ui="{ base: 'px-0 font-medium' }" @change="updateTitle(item, $event)" />
-              <span v-for="field in visibleFields.slice(0, 3)" :key="field.id" class="hidden max-w-40 truncate text-xs text-muted sm:block">{{ displayValue(item.values[field.id]) || '—' }}</span>
-              <UButton v-if="!showArchived && can(Permission.manageDatabases)" color="error" variant="ghost" size="xs" icon="i-ph-trash" :aria-label="`Delete ${item.title}`" @click="deleteItem(item)" />
+            <div v-for="item in visibleItems" :key="item.id" class="group flex cursor-pointer items-center gap-4 px-4 py-3 hover:bg-elevated" @click="openRecord(item)">
+              <UInput :model-value="item.title" :data-record-title="item.id" variant="none" aria-label="Record title" :disabled="showArchived || !can(Permission.writeData)" class="min-w-48 flex-1" :ui="{ base: 'px-0 font-medium' }" @click.stop @change="updateTitle(item, $event)" />
+              <span v-for="field in visibleFields.slice(0, 3)" :key="field.id" class="hidden max-w-48 min-w-0 sm:block"><DataFieldValue :field="field" :value="item.values[field.id]" :members="membersById" :linked="linked" placeholder /></span>
+              <UIcon name="i-ph-caret-right" class="size-4 shrink-0 text-dimmed" />
             </div>
           </div>
         </div>
@@ -967,13 +1007,30 @@ function retryLoad() {
             <section v-for="group in boardGroups" :key="group.key" class="w-72 shrink-0 rounded-lg bg-muted/60 p-2" @dragover.prevent @drop="dropBoard(group.key)">
               <header class="mb-2 flex items-center gap-2 px-1 text-sm font-medium"><span>{{ group.label }}</span><span class="text-xs text-dimmed">{{ group.total }}</span></header>
               <div class="space-y-2">
-                <article v-for="item in group.items" :key="item.id" :draggable="!showArchived && can(Permission.writeData)" class="rounded-md border border-default bg-default p-3 shadow-sm" @dragstart="draggedItemId = item.id">
+                <article v-for="item in group.items" :key="item.id" :draggable="!showArchived && can(Permission.writeData)" class="cursor-pointer rounded-md border border-default bg-default p-3 shadow-sm hover:bg-elevated/60" @dragstart="draggedItemId = item.id" @click="openRecord(item)">
                   <p class="font-medium">{{ item.title }}</p>
-                  <dl class="mt-2 space-y-1 text-xs text-muted"><div v-for="field in visibleFields.filter(field => field.id !== boardField?.id).slice(0, 3)" :key="field.id" class="flex gap-2"><dt class="shrink-0">{{ field.name }}</dt><dd class="ml-auto max-w-36 truncate text-default">{{ displayValue(item.values[field.id]) || '—' }}</dd></div></dl>
+                  <dl class="mt-2 space-y-1 text-xs text-muted"><div v-for="field in visibleFields.filter(field => field.id !== boardField?.id).slice(0, 3)" :key="field.id" class="flex items-start gap-2"><dt class="shrink-0">{{ field.name }}</dt><dd class="ml-auto min-w-0 max-w-40 text-default"><DataFieldValue :field="field" :value="item.values[field.id]" :members="membersById" :linked="linked" placeholder /></dd></div></dl>
                 </article>
               </div>
             </section>
           </div>
+        </div>
+
+        <div v-else-if="activeView.layout === 'gallery'" class="min-h-0 flex-1 overflow-y-auto p-3">
+          <!-- Cards, like Notion's gallery: the title, then the visible fields with their names. -->
+          <ul class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <li v-for="item in visibleItems" :key="item.id">
+              <article class="flex h-full cursor-pointer flex-col gap-2 rounded-lg border border-default bg-default p-4 hover:bg-elevated/60" @click="openRecord(item)">
+                <p class="truncate font-medium text-highlighted">{{ item.title }}</p>
+                <dl class="space-y-1.5 text-xs">
+                  <div v-for="field in visibleFields.slice(0, 5)" :key="field.id" class="flex items-start gap-2">
+                    <dt class="flex w-24 shrink-0 items-center gap-1 truncate text-muted"><UIcon :name="fieldIcon(field.type)" class="size-3.5 shrink-0 text-dimmed" />{{ field.name }}</dt>
+                    <dd class="min-w-0 flex-1"><DataFieldValue :field="field" :value="item.values[field.id]" :members="membersById" :linked="linked" placeholder /></dd>
+                  </div>
+                </dl>
+              </article>
+            </li>
+          </ul>
         </div>
 
         <div v-else class="min-h-0 flex-1 overflow-auto p-3">
@@ -982,7 +1039,7 @@ function retryLoad() {
             <div v-for="day in ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']" :key="day" class="border-b border-e border-default bg-muted px-2 py-1.5 font-medium text-muted">{{ day }}</div>
             <div v-for="day in calendarDays" :key="day.key" class="min-h-28 border-b border-e border-default p-1.5" :class="day.current ? 'bg-default' : 'bg-muted/30 text-dimmed'">
               <span>{{ day.date.getDate() }}</span>
-              <div class="mt-1 space-y-1"><div v-for="item in day.items" :key="item.id" class="truncate rounded bg-primary/10 px-1.5 py-1 text-default">{{ item.title }}</div></div>
+              <div class="mt-1 space-y-1"><button v-for="item in day.items" :key="item.id" type="button" class="block w-full truncate rounded bg-primary/10 px-1.5 py-1 text-start text-default hover:bg-primary/20" @click="openRecord(item)">{{ item.title }}</button></div>
             </div>
           </div>
           <p class="mt-2 text-xs text-muted">Records without a date remain available from a table or list view.</p>
@@ -1006,7 +1063,7 @@ function retryLoad() {
       <template #body>
         <div class="space-y-5">
           <UFormField label="Name"><UInput v-model="viewName" autofocus class="w-full" /></UFormField>
-          <UFormField label="Layout"><USelect v-model="viewLayout" :items="layoutOptions" class="w-full" /></UFormField>
+          <UFormField label="Layout"><USelect v-model="viewLayout" :items="viewLayoutChoices" class="w-full" /></UFormField>
           <UFormField v-if="viewLayout === 'board'" label="Group cards by">
             <USelect v-model="viewGroupFieldId" :items="selectFields.map(field => ({ label: field.name, value: field.id }))" placeholder="Choose a Select field" class="w-full" />
             <p v-if="!selectFields.length" class="mt-1 text-xs text-warning">Create a Select field before using a board.</p>
@@ -1030,58 +1087,7 @@ function retryLoad() {
             <p v-else class="text-xs text-muted">This database has no custom fields.</p>
           </fieldset>
 
-          <!-- One row per rule, like Notion: field · condition · value · remove, all the same size. -->
-          <section class="space-y-2" role="group" aria-label="Filters">
-            <div class="flex items-center justify-between gap-2">
-              <h3 class="text-sm font-medium">Filters</h3>
-              <UButton color="neutral" variant="ghost" size="xs" icon="i-ph-plus" label="Add filter" :disabled="viewFilters.length >= 8" @click="addViewFilter" />
-            </div>
-            <div v-for="(filter, index) in viewFilters" :key="index" class="flex flex-wrap items-center gap-1.5 sm:flex-nowrap">
-              <USelect v-model="filter.fieldId" size="sm" :items="sortOptions" aria-label="Filter field" class="min-w-0 flex-1" @update:model-value="normalizeEditableFilter(filter)" />
-              <USelect v-model="filter.operator" size="sm" :items="filterOperatorOptions(filter)" aria-label="Condition" class="w-36 shrink-0" @update:model-value="normalizeEditableFilter(filter)" />
-              <USelect
-                v-if="filterNeedsValue(filter) && filterField(filter)?.type === 'boolean'"
-                v-model="filter.value"
-                size="sm"
-                :items="[{ label: 'Yes', value: 'true' }, { label: 'No', value: 'false' }]"
-                aria-label="Value"
-                class="min-w-0 flex-1"
-              />
-              <USelect
-                v-else-if="filterUsesSelectChoice(filter)"
-                v-model="filter.value"
-                size="sm"
-                :items="filterField(filter)?.options.map(option => ({ label: option, value: option })) ?? []"
-                placeholder="Value"
-                aria-label="Value"
-                class="min-w-0 flex-1"
-              />
-              <UInput
-                v-else-if="filterNeedsValue(filter)"
-                v-model="filter.value"
-                size="sm"
-                :type="filterField(filter)?.type === 'number' ? 'number' : filterField(filter)?.type === 'date' ? 'date' : 'text'"
-                placeholder="Value"
-                aria-label="Value"
-                class="min-w-0 flex-1"
-              />
-              <UButton color="neutral" variant="ghost" size="sm" square icon="i-ph-x" aria-label="Remove filter" @click="viewFilters.splice(index, 1)" />
-            </div>
-            <p v-if="!viewFilters.length" class="text-xs text-muted">No filters</p>
-          </section>
-
-          <section class="space-y-2" role="group" aria-label="Sorts">
-            <div class="flex items-center justify-between gap-2">
-              <h3 class="text-sm font-medium">Sorts</h3>
-              <UButton color="neutral" variant="ghost" size="xs" icon="i-ph-plus" label="Add sort" :disabled="viewSorts.length >= 3" @click="addViewSort" />
-            </div>
-            <div v-for="(sort, index) in viewSorts" :key="index" class="flex items-center gap-1.5">
-              <USelect v-model="sort.fieldId" size="sm" :items="sortOptions" aria-label="Sort field" class="min-w-0 flex-1" />
-              <USelect v-model="sort.direction" size="sm" :items="[{ label: 'Ascending', value: 'asc' }, { label: 'Descending', value: 'desc' }]" aria-label="Direction" class="w-36 shrink-0" />
-              <UButton color="neutral" variant="ghost" size="sm" square icon="i-ph-x" aria-label="Remove sort" @click="viewSorts.splice(index, 1)" />
-            </div>
-            <p v-if="!viewSorts.length" class="text-xs text-muted">No sorting</p>
-          </section>
+          <DataViewRules v-model:filters="viewFilters" v-model:sorts="viewSorts" :fields="fields" :members="members" />
         </div>
       </template>
       <template #footer>
@@ -1099,19 +1105,38 @@ function retryLoad() {
       <template #body>
         <div class="space-y-4">
           <UFormField label="Name"><UInput v-model="fieldName" autofocus class="w-full" /></UFormField>
-          <UFormField label="Type" :hint="`${DatabaseSlotCounts[fieldType]} available per database`">
-            <USelect v-model="fieldType" :items="fieldTypeOptions" :disabled="Boolean(editingFieldId)" class="w-full" />
+          <UFormField label="Type" :hint="`${DatabaseSlotCounts[databaseSlotPool(fieldType)]} ${fieldTypeLabel(fieldType).toLowerCase()} fields share a pool per database`">
+            <USelect v-model="fieldType" :items="fieldTypeChoices" :disabled="Boolean(editingFieldId)" class="w-full" />
           </UFormField>
-          <UFormField v-if="fieldType === 'select'" label="Options" description="Separate options with commas.">
+          <UFormField v-if="hasFieldOptions(fieldType)" label="Options" description="Separate options with commas.">
             <UInput v-model="fieldOptions" placeholder="New, In progress, Done" class="w-full" @keyup.enter="saveField" />
+          </UFormField>
+          <UFormField v-if="fieldType === 'relation'" label="Related database" description="Records of this database can be linked from each record.">
+            <USelect v-model="fieldRelationDatabaseId" :items="relationTargets" :disabled="Boolean(editingFieldId)" placeholder="Choose a database" class="w-full" />
           </UFormField>
         </div>
       </template>
       <template #footer>
         <UButton color="neutral" variant="ghost" label="Cancel" @click="showFieldForm = false" />
-        <UButton label="Save" :loading="saving" :disabled="!fieldName.trim()" @click="saveField" />
+        <UButton label="Save" :loading="saving" :disabled="!fieldFormComplete" @click="saveField" />
       </template>
     </UModal>
+
+    <DataRecordPanel
+      v-model:open="panelOpen"
+      :item="panelItem"
+      :fields="fields"
+      :database-name="activeDatabase?.name ?? ''"
+      :members="members"
+      :linked="linked"
+      :can-write="!showArchived && can(Permission.writeData)"
+      :can-delete="!showArchived && can(Permission.manageDatabases)"
+      :saving="Boolean(panelItem && rowEdits.edits.get(panelItem.id)?.saving)"
+      :loading="Boolean(selectedRecordId) && !panelItem && recordQ.isPending.value"
+      @update="panelItem && updateRecord(panelItem, $event)"
+      @linked="rememberLinked"
+      @delete="panelItem && deleteItem(panelItem)"
+    />
 
     <UModal v-model:open="showConfirm" :title="confirmTitle">
       <template #body><p class="text-sm text-muted">This cannot be undone.</p></template>

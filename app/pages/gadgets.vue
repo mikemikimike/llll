@@ -269,8 +269,9 @@ function datasetFor(bindingId: string): GadgetRuntimeDatasetDTO | null {
 }
 
 function displayValue(value: DatabaseValue | undefined): string {
-  if (value === null || value === undefined || value === '') return '—'
+  if (value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)) return '—'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (Array.isArray(value)) return value.join(', ')
   return String(value)
 }
 

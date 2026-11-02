@@ -8,11 +8,21 @@ order: 7
 
 ## Databases
 
-A Database is a table of records. Create one with **New database**, then add fields with **+** in the header: **Text**, **Number**, **Checkbox**, **Date** or **Select**. Every record has a **Title**.
+A Database is a table of records. Create one with **New database**, then add fields with **+** in the header. Every record has a **Title**.
+
+| Field | Holds |
+| --- | --- |
+| **Text**, **Number**, **Checkbox**, **Date** | A line of text, an amount, done or not, one day |
+| **Select**, **Multi-select** | One option, or any number of options, from the field's list |
+| **URL**, **Email**, **Phone** | An address you can open, write to or call from the record |
+| **Person** | Members of this Server |
+| **Relation** | Records of a Database, this one included; a link opens the record |
 
 - Type in the last row to add a record, or use **Record**.
-- Double-click a cell to edit it.
-- **Search** filters the current view. Saved views keep their own filters and sort.
+- Click a cell to edit it. **Open** on a row, or a card in any other view, opens the record as a page with every field.
+- **Filter**, **Sort** and **Properties** above the table change the current view as you set them. Saved views keep their own filters, sort and shown fields; **View settings** has them all in one place.
+- Views come as a **Table**, **Board** grouped by a Select field, **Calendar** on a Date field, **List** or **Gallery** of cards.
+- **Search** filters the current view.
 - Archive a Database you no longer use. **Archived databases** lists them for restoring.
 
 ## Documents
@@ -35,6 +45,6 @@ Three Role permissions cover Data:
 
 ## Agents and MCP
 
-An Agent whose Role and the person who asks both allow it can find tables with `list_tables`, read records with `read_records`, add and change them with `create_record` and `update_record`, and read or write Documents. An Agent's Role can also be limited to chosen Databases and Documents.
+An Agent whose Role and the person who asks both allow it can find tables with `list_tables`, read records with `read_records`, add and change them with `create_record` and `update_record`, and read or write Documents. Multi-select, Person and Relation values are lists; `read_records` returns the titles of linked records alongside their ids. An Agent's Role can also be limited to chosen Databases and Documents.
 
 MCP clients use the `data:read`, `data:write`, `data:manage`, `documents:read` and `documents:write` scopes. See [MCP](../agents/mcp.md).

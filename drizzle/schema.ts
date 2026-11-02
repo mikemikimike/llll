@@ -799,7 +799,7 @@ export const databaseFields = sqliteTable('database_fields', {
   id: text('id').primaryKey(),
   databaseId: text('database_id').notNull().references(() => databaseDefinitions.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  type: text('type', { enum: ['text', 'number', 'boolean', 'date', 'select'] }).notNull(),
+  type: text('type', { enum: ['text', 'number', 'boolean', 'date', 'select', 'multi_select', 'url', 'email', 'phone', 'person', 'relation'] }).notNull(),
   slot: text('slot').notNull(),
   configJson: text('config_json').notNull().default('{}'),
   position: integer('position').notNull().default(0),
@@ -809,7 +809,7 @@ export const databaseFields = sqliteTable('database_fields', {
   uniqueIndex('database_fields_name_unique').on(table.databaseId, table.name),
   uniqueIndex('database_fields_slot_unique').on(table.databaseId, table.type, table.slot),
   index('database_fields_position_idx').on(table.databaseId, table.position),
-  check('database_fields_type_check', sql`${table.type} in ('text', 'number', 'boolean', 'date', 'select')`),
+  check('database_fields_type_check', sql`${table.type} in ('text', 'number', 'boolean', 'date', 'select', 'multi_select', 'url', 'email', 'phone', 'person', 'relation')`),
 ])
 
 /** Scalar custom fields use bounded typed slots; semantic names stay in database_fields. */
@@ -879,7 +879,7 @@ export const databaseViews = sqliteTable('database_views', {
   id: text('id').primaryKey(),
   databaseId: text('database_id').notNull().references(() => databaseDefinitions.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  layout: text('layout', { enum: ['table', 'board', 'calendar', 'list'] }).notNull().default('table'),
+  layout: text('layout', { enum: ['table', 'board', 'calendar', 'list', 'gallery'] }).notNull().default('table'),
   configJson: text('config_json').notNull().default('{"visibleFieldIds":null,"filters":[],"sorts":[{"fieldId":"title","direction":"asc"}],"groupFieldId":null,"dateFieldId":null}'),
   position: integer('position').notNull().default(0),
   version: integer('version').notNull().default(1),
@@ -888,8 +888,22 @@ export const databaseViews = sqliteTable('database_views', {
 }, table => [
   uniqueIndex('database_views_name_unique').on(table.databaseId, table.name),
   index('database_views_database_position_idx').on(table.databaseId, table.position),
-  check('database_views_layout_check', sql`${table.layout} in ('table', 'board', 'calendar', 'list')`),
+  check('database_views_layout_check', sql`${table.layout} in ('table', 'board', 'calendar', 'list', 'gallery')`),
   check('database_views_version_check', sql`${table.version} > 0`),
+])
+
+/** One row per record a relation field points at; the field's target database is in its config. */
+export const databaseItemLinks = sqliteTable('database_item_links', {
+  id: text('id').primaryKey(),
+  fieldId: text('field_id').notNull().references(() => databaseFields.id, { onDelete: 'cascade' }),
+  itemId: text('item_id').notNull().references(() => databaseItems.id, { onDelete: 'cascade' }),
+  targetItemId: text('target_item_id').notNull().references(() => databaseItems.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+  createdAt: text('created_at').notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+}, table => [
+  uniqueIndex('database_item_links_unique').on(table.fieldId, table.itemId, table.targetItemId),
+  index('database_item_links_item_idx').on(table.itemId, table.fieldId, table.position),
+  index('database_item_links_target_idx').on(table.targetItemId),
 ])
 
 /** Rich-text documents are durable server data. */

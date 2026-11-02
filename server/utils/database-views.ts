@@ -1,8 +1,9 @@
-import { DatabaseColumnWidth, DatabaseViewFilterOperators, DatabaseViewLayouts, defaultDatabaseViewConfig, type DatabaseValue, type DatabaseViewConfig, type DatabaseViewFilter, type DatabaseViewFilterOperator, type DatabaseViewLayout } from '../../shared/database'
+import { DatabaseColumnWidth, DatabaseViewFilterOperators, DatabaseViewLayouts, defaultDatabaseViewConfig, filterOperatorsFor, isListFieldType, type DatabaseFieldType, type DatabaseScalarValue, type DatabaseViewConfig, type DatabaseViewFilter, type DatabaseViewFilterOperator, type DatabaseViewLayout } from '../../shared/database'
 import type { DatabasePageDTO, DatabaseViewDTO } from '../../shared/types'
+import { resourceAllowed, type AuthorizationContext } from '../../shared/authorization'
 import type { L4Env } from '../../workers/env'
 import { fail } from './cf'
-import { databaseFieldDto, databaseFieldsFor, databaseItemDto, requireDatabase, type StoredDatabaseField } from './database-data'
+import { databaseFieldDto, databaseFieldsFor, databaseItemDto, loadItemLinks, loadLinkedRecords, requireDatabase, type StoredDatabaseField } from './database-data'
 
 type ViewRow = Omit<DatabaseViewDTO, 'config'> & { configJson: string }
 type ItemRow = Parameters<typeof databaseItemDto>[0]
@@ -19,16 +20,12 @@ function fieldFor(fields: StoredDatabaseField[], fieldId: string): StoredDatabas
   return fields.find(field => field.id === fieldId) ?? null
 }
 
-function fieldType(fields: StoredDatabaseField[], fieldId: string) {
+function fieldType(fields: StoredDatabaseField[], fieldId: string): DatabaseFieldType | null {
   return fieldId === 'title' ? 'text' : fieldFor(fields, fieldId)?.type ?? null
 }
 
-function operatorAllowed(type: ReturnType<typeof fieldType>, operator: DatabaseViewFilterOperator): boolean {
-  if (!type) return false
-  if (operator === 'is_empty' || operator === 'is_not_empty' || operator === 'equals' || operator === 'not_equals') return true
-  if (operator === 'contains') return type === 'text' || type === 'select'
-  if (operator === 'greater_than' || operator === 'less_than') return type === 'number'
-  return type === 'date'
+function operatorAllowed(type: DatabaseFieldType | null, operator: DatabaseViewFilterOperator): boolean {
+  return filterOperatorsFor(type).includes(operator)
 }
 
 function normalizeFilter(value: unknown, fields: StoredDatabaseField[], strict: boolean): DatabaseViewFilter | null {
@@ -56,16 +53,16 @@ function normalizeFilter(value: unknown, fields: StoredDatabaseField[], strict: 
   const type = fieldType(fields, raw.fieldId)
   if ((type === 'number' && typeof raw.value !== 'number')
     || (type === 'boolean' && typeof raw.value !== 'boolean')
-    || ((type === 'date' || type === 'text' || type === 'select') && typeof raw.value !== 'string')) {
+    || (type !== 'number' && type !== 'boolean' && typeof raw.value !== 'string')) {
     if (strict) fail(400, 'bad_request', 'A view filter value does not match its field')
     return null
   }
   const field = fieldFor(fields, raw.fieldId)
-  if (type === 'select' && operator !== 'contains' && !field?.options.includes(String(raw.value))) {
+  if ((type === 'select' && operator !== 'contains' || type === 'multi_select') && !field?.options.includes(String(raw.value))) {
     if (strict) fail(400, 'bad_request', 'A Select filter must use one of the field options')
     return null
   }
-  return { fieldId: raw.fieldId, operator, value: raw.value as DatabaseValue }
+  return { fieldId: raw.fieldId, operator, value: raw.value as DatabaseScalarValue }
 }
 
 export function normalizeDatabaseViewConfig(
@@ -152,16 +149,18 @@ export async function requireDatabaseView(env: L4Env, id: string): Promise<ViewR
   return row
 }
 
+/** The column holding a field's value; relation fields live in database_item_links and have none. */
 function columnFor(fields: StoredDatabaseField[], fieldId: string): string | null {
   if (fieldId === 'title') return 'title'
-  return fieldFor(fields, fieldId)?.slot ?? null
+  const field = fieldFor(fields, fieldId)
+  return field && field.type !== 'relation' ? field.slot : null
 }
 
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/gu, match => `\\${match}`)
 }
 
-function sqlValue(value: DatabaseValue | undefined): string | number | null {
+function sqlValue(value: DatabaseScalarValue | null | undefined): string | number | null {
   return typeof value === 'boolean' ? Number(value) : value ?? null
 }
 
@@ -174,13 +173,23 @@ function viewQuery(
   const clauses = ['database_id = ?']
   const values: Array<string | number | null> = []
   for (const filter of config.filters) {
+    const type = fieldType(fields, filter.fieldId)
+    if (type === 'relation') {
+      // Linked records are rows of their own; empty means no row for this field.
+      if (filter.operator !== 'is_empty' && filter.operator !== 'is_not_empty') continue
+      clauses.push(`${filter.operator === 'is_empty' ? 'NOT ' : ''}EXISTS (SELECT 1 FROM database_item_links WHERE item_id = database_items.id AND field_id = ?)`)
+      values.push(filter.fieldId)
+      continue
+    }
     const column = columnFor(fields, filter.fieldId)
     if (!column) continue
     if (filter.operator === 'is_empty') clauses.push(`(${column} IS NULL OR ${column} = '')`)
     else if (filter.operator === 'is_not_empty') clauses.push(`(${column} IS NOT NULL AND ${column} <> '')`)
     else if (filter.operator === 'contains') {
+      // A list column holds a JSON array, so an entry matches with its quotes.
+      const needle = type && isListFieldType(type) ? JSON.stringify(String(filter.value ?? '')) : String(filter.value ?? '')
       clauses.push(`lower(CAST(${column} AS TEXT)) LIKE ? ESCAPE '\\'`)
-      values.push(`%${escapeLike(String(filter.value ?? '').toLocaleLowerCase())}%`)
+      values.push(`%${escapeLike(needle.toLocaleLowerCase())}%`)
     }
     else {
       const booleanComparison = fieldType(fields, filter.fieldId) === 'boolean' && typeof filter.value === 'boolean'
@@ -193,7 +202,7 @@ function viewQuery(
   }
   const needle = search.trim().toLocaleLowerCase()
   if (needle) {
-    const columns = ['title', ...fields.map(field => field.slot)]
+    const columns = ['title', ...fields.filter(field => field.type !== 'relation').map(field => field.slot)]
     clauses.push(`(${columns.map(column => `lower(CAST(${column} AS TEXT)) LIKE ? ESCAPE '\\'`).join(' OR ')})`)
     const pattern = `%${escapeLike(needle)}%`
     values.push(...columns.map(() => pattern))
@@ -231,7 +240,7 @@ export async function databaseItemMatchesView(
 export async function loadDatabasePage(
   env: L4Env,
   databaseId: string,
-  options: { viewId?: string | null, page: number, pageSize: number, search?: string, dateFrom?: string, dateTo?: string },
+  options: { viewId?: string | null, page: number, pageSize: number, search?: string, dateFrom?: string, dateTo?: string, authorization?: AuthorizationContext },
 ): Promise<DatabasePageDTO> {
   const definition = await requireDatabase(env, databaseId)
   const fields = await databaseFieldsFor(env, databaseId)
@@ -266,11 +275,13 @@ export async function loadDatabasePage(
   const [countResult, itemsResult, groupResult] = await env.DB.batch(statements)
   const count = (countResult?.results?.[0] as { total?: number } | undefined)?.total ?? 0
   const items = (itemsResult?.results ?? []) as ItemRow[]
+  const links = fields.some(field => field.type === 'relation') ? await loadItemLinks(env, items.map(item => item.id)) : new Map()
   return {
     database: { ...definition, fields: fields.map(databaseFieldDto) },
     views,
     view,
-    items: items.map(item => databaseItemDto(item, fields)),
+    items: items.map(item => databaseItemDto(item, fields, links.get(item.id))),
+    linked: await loadLinkedRecords(env, links, databaseId => !options.authorization || resourceAllowed(options.authorization, 'databases', databaseId)),
     total: Number(count),
     page: options.page,
     pageSize: options.pageSize,

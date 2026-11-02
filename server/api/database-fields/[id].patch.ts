@@ -1,10 +1,10 @@
 import { getServerId } from '../../../shared/server-id'
 import { z } from 'zod'
-import { normalizeDatabaseOptions } from '../../../shared/database'
+import { decodeListValue, hasFieldOptions, normalizeDatabaseOptions } from '../../../shared/database'
 import { nowIso } from '../../../shared/ids'
 import { Permission } from '../../../shared/permissions'
 import { cf, fail } from '../../utils/cf'
-import { databaseFieldDto, requireDatabase, requireDatabaseField } from '../../utils/database-data'
+import { databaseFieldConfig, databaseFieldDto, requireDatabase, requireDatabaseField } from '../../utils/database-data'
 import { requireMember } from '../../utils/guards'
 import { writeAudit } from '../../utils/messages'
 import { parseBody } from '../../utils/validate'
@@ -30,13 +30,14 @@ export default defineEventHandler(async (event) => {
   }
   let options = field.options
   if (body.options !== undefined) {
-    if (field.type !== 'select') fail(400, 'bad_request', 'Only select fields have options')
+    if (!hasFieldOptions(field.type)) fail(400, 'bad_request', 'Only select fields have options')
     options = normalizeDatabaseOptions(body.options)
     const values = await env.DB.prepare(
       `SELECT DISTINCT ${field.slot} as value FROM database_items
        WHERE database_id = ? AND ${field.slot} IS NOT NULL`,
     ).bind(field.databaseId).all<{ value: string }>()
-    if ((values.results ?? []).some(row => !options.includes(row.value))) {
+    const used = (values.results ?? []).flatMap(row => field.type === 'multi_select' ? decodeListValue(row.value) : [row.value])
+    if (used.some(value => !options.includes(value))) {
       fail(409, 'option_in_use', 'Remove or change existing cell values before deleting this option')
     }
   }
@@ -44,7 +45,7 @@ export default defineEventHandler(async (event) => {
   const values: Array<string | number> = [nowIso()]
   if (body.name !== undefined) { assignments.push('name = ?'); values.push(body.name) }
   if (body.position !== undefined) { assignments.push('position = ?'); values.push(body.position) }
-  if (body.options !== undefined) { assignments.push('config_json = ?'); values.push(JSON.stringify({ options })) }
+  if (body.options !== undefined) { assignments.push('config_json = ?'); values.push(databaseFieldConfig({ ...field, options })) }
   await env.DB.prepare(`UPDATE database_fields SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, id).run()
   await writeAudit(env, { serverId: (await getServerId(cf(event).env.DB)), actorId: actor.user.id, action: 'database_field.update', targetType: 'database_field', targetId: id, meta: { databaseId: field.databaseId, fields: Object.keys(body) } })
   return { field: databaseFieldDto(await requireDatabaseField(env, id)) }
