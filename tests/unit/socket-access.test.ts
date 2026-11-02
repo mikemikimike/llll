@@ -25,10 +25,15 @@ it('checks a user once per fanout while keeping every authorized tab', async () 
   expect(check).toHaveBeenCalledOnce()
 })
 
-it('fails closed when current authorization cannot be established', async () => {
+it('skips the send but keeps the socket when authorization cannot be established', async () => {
   const member = socket('member')
-  expect(await authorizedSockets([member], async () => { throw new Error('D1 unavailable') })).toEqual([])
-  expect(member.close).toHaveBeenCalledWith(4403, 'access_revoked')
+  let available = false
+  const check = async () => { if (!available) throw new Error('D1 unavailable'); return true }
+  expect(await authorizedSockets([member], check)).toEqual([])
+  // A database error is not a revocation: closing with 4403 would end the conversation on the client for good.
+  expect(member.close).not.toHaveBeenCalled()
+  available = true
+  expect(await authorizedSockets([member], check)).toEqual([member])
 })
 
 it('does not reuse another session authorization for the same user', async () => {

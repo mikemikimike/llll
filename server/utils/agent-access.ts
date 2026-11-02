@@ -94,7 +94,7 @@ export async function grantAgentAccess(env: L4Env, auth: AuthorizationContext, a
     ? await env.DB.prepare("SELECT id FROM users WHERE id=? AND kind='human' AND status='active'").bind(input.memberId).first()
     : await env.DB.prepare("SELECT id FROM roles WHERE id=? AND key<>'owner'").bind(input.roleId).first()
   if (!target) fail(400, 'access_target', 'Choose an active person or a non-owner role')
-  if (input.memberId === auth.principal.id) fail(400, 'access_target', 'Grant agent access to someone else')
+  if (input.memberId === auth.principal.id || (input.roleId && input.roleId === auth.principal.roleId)) fail(400, 'access_target', 'Grant agent access to someone else')
   const id = newId()
   const inserted = await env.DB.prepare(`INSERT INTO grants(id,member_id,role_id,agent_id,policy_id,project_id,daily_runs,expires_at,created_by,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING id`)

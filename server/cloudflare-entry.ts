@@ -13,7 +13,7 @@ import { AGENT_GATEWAY_PATH, agentGateway } from './utils/agent-gateway'
 import { receiveMailGatewayRequest } from '../workers/mail-gateway-ingress'
 import { renewCloudflareAccess } from './utils/cloudflare-account-access'
 import { requestTiming, timingRequested } from './utils/request-timing'
-import { serverStartupSettled, STARTUP_WAIT_MS } from './utils/server-startup'
+import { serverStartupSettled } from './utils/server-startup'
 
 export { ChannelDurableObject } from '../workers/channel-do'
 export { ServerDurableObject } from '../workers/server-do'
@@ -26,6 +26,7 @@ export { AgentComputeDurableObject } from '../workers/agent-compute'
 export { AgentOutbound } from '../workers/agent-outbound'
 
 const nitroApp = useNitroApp()
+const REQUEST_STALL_LOG_MS = 90_000
 
 export default {
   async fetch(request: Request, env: L4Env, context: ExecutionContext): Promise<Response> {
@@ -57,8 +58,9 @@ export default {
 
     // Opt-in measurement, per request on Previews: counts can reveal which branch a request took.
     const timing = timingRequested(env, request) ? requestTiming(env) : null
-    // A request still unanswered after this long says where it waits, for the Worker logs.
-    const stall = setTimeout(() => console.warn('request.stalled', { method: request.method, path: url.pathname, startupSettled: serverStartupSettled(env.DB) }), STARTUP_WAIT_MS)
+    // A request still unanswered after this long says where it waits, for the Worker logs. Model-backed
+    // requests (transcription, avatars, a Factory call waiting on a Node) take up to a minute by design.
+    const stall = setTimeout(() => console.warn('request.stalled', { method: request.method, path: url.pathname, startupSettled: serverStartupSettled(env.DB) }), REQUEST_STALL_LOG_MS)
     const response = await nitroApp.localFetch(url.pathname + url.search, {
       context: {
         waitUntil: (p: Promise<unknown>) => context.waitUntil(p),

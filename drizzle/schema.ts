@@ -1045,9 +1045,33 @@ export const grants = sqliteTable('grants', {
 }, table => [
   check('grants_subject', sql`(${table.memberId} IS NOT NULL AND ${table.roleId} IS NULL) OR (${table.roleId} IS NOT NULL AND ${table.memberId} IS NULL)`),
   check('grants_content', sql`(${table.policyId} IS NULL) <> (${table.permissions} IS NULL)`),
+  check('grants_permissions', sql`${table.permissions} IS NULL OR ${table.permissions} > 0`),
+  check('grants_daily_runs', sql`${table.dailyRuns} IS NULL OR ${table.dailyRuns} BETWEEN 1 AND 10000`),
+  // One scope at most. None means the whole Server, which only Agent access may use.
+  check('grants_one_scope', sql`(${table.projectId} IS NOT NULL) + (${table.channelId} IS NOT NULL) + (${table.mailboxId} IS NOT NULL) + (${table.gadgetId} IS NOT NULL) + (${table.gadgetVersionId} IS NOT NULL) + (${table.connectionId} IS NOT NULL) <= 1`),
+  check('grants_scope', sql`${table.agentId} IS NOT NULL OR ${table.projectId} IS NOT NULL OR ${table.channelId} IS NOT NULL OR ${table.mailboxId} IS NOT NULL OR ${table.gadgetId} IS NOT NULL OR ${table.gadgetVersionId} IS NOT NULL OR ${table.connectionId} IS NOT NULL`),
+  check('grants_agent_limits', sql`${table.agentId} IS NOT NULL OR (${table.dailyRuns} IS NULL AND ${table.expiresAt} IS NULL)`),
+  // Policies apply to Projects and Agent access; resource grants carry their own permissions.
+  check('grants_policy_scope', sql`(${table.policyId} IS NOT NULL) = (${table.channelId} IS NULL AND ${table.mailboxId} IS NULL AND ${table.gadgetId} IS NULL AND ${table.gadgetVersionId} IS NULL AND ${table.connectionId} IS NULL)`),
+  // Channel: a Role may send, attach files or start Live (sendMessages, attachFiles, startLive).
+  check('grants_channel', sql`${table.channelId} IS NULL OR (${table.roleId} IS NOT NULL AND (${table.permissions} & ~112) = 0)`),
+  // Mailbox: a Member reads (readMail), sends (+ sendMail) or manages it (+ manageChannels).
+  check('grants_mailbox', sql`${table.mailboxId} IS NULL OR (${table.memberId} IS NOT NULL AND ${table.permissions} IN (536870912, 1610612736, 1610612738))`),
+  // Apps: a Role may use a draft or a published version (useGadgets).
+  check('grants_gadget', sql`(${table.gadgetId} IS NULL AND ${table.gadgetVersionId} IS NULL) OR (${table.roleId} IS NOT NULL AND ${table.permissions} = 1024)`),
+  // MCP connection: a Member, Agent or Role may use it (useExternalTools).
+  check('grants_connection', sql`${table.connectionId} IS NULL OR ${table.permissions} = 33554432`),
+  uniqueIndex('grants_member_identity').on(table.memberId, sql`coalesce(${table.agentId},'')`, sql`coalesce(${table.projectId},'')`, table.policyId).where(sql`${table.memberId} IS NOT NULL AND ${table.policyId} IS NOT NULL`),
+  uniqueIndex('grants_role_identity').on(table.roleId, sql`coalesce(${table.agentId},'')`, sql`coalesce(${table.projectId},'')`, table.policyId).where(sql`${table.roleId} IS NOT NULL AND ${table.policyId} IS NOT NULL`),
+  uniqueIndex('grants_channel_identity').on(table.channelId, table.roleId).where(sql`${table.channelId} IS NOT NULL`),
+  uniqueIndex('grants_mailbox_identity').on(table.mailboxId, table.memberId).where(sql`${table.mailboxId} IS NOT NULL`),
+  uniqueIndex('grants_gadget_identity').on(table.gadgetId, table.roleId).where(sql`${table.gadgetId} IS NOT NULL`),
+  uniqueIndex('grants_gadget_version_identity').on(table.gadgetVersionId, table.roleId).where(sql`${table.gadgetVersionId} IS NOT NULL`),
+  uniqueIndex('grants_connection_identity').on(table.connectionId, sql`coalesce(${table.memberId},'')`, sql`coalesce(${table.roleId},'')`).where(sql`${table.connectionId} IS NOT NULL`),
   index('grants_member').on(table.memberId, table.agentId, table.projectId),
   index('grants_role').on(table.roleId, table.agentId, table.projectId),
   index('grants_project').on(table.projectId),
+  index('grants_member_mailbox').on(table.memberId, table.mailboxId).where(sql`${table.mailboxId} IS NOT NULL`),
 ])
 
 export const tasks = sqliteTable('tasks', {
@@ -1074,6 +1098,9 @@ export const tasks = sqliteTable('tasks', {
   /** The chat message this task was created from. No foreign key: the task outlives the message. */
   sourceChannelId: text('source_channel_id'),
   sourceMessageId: text('source_message_id'),
+  /** The pull request the task's agent published, and the latest preview found for it. */
+  pullUrl: text('pull_url'),
+  previewUrl: text('preview_url'),
   ...isoTimestamps(),
 }, table => [
   index('tasks_board_status_position_idx').on(table.boardId, table.status, table.position),

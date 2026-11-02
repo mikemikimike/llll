@@ -59,6 +59,9 @@ export class LizardComputeDurableObject extends DurableObject<L4Env> {
       : { workspaceId: uuid.parse(workspaceId), phase: 'volume', createdAt: Date.now() }
     uuid.parse(state.workspaceId)
     if (!state.nodeId) token.parse(pairing)
+    // An Owner's stop turned the Node off. The resumed VM's daemon keeps the Node's token on the
+    // disk and never pairs again, so the Server must accept it before its first request arrives.
+    if (state.nodeId) await this.env.DB.prepare('UPDATE compute_nodes SET enabled=1 WHERE id=?').bind(state.nodeId).run()
     await this.setSecrets(state, { pairing: state.nodeId ? undefined : pairing })
     await this.ctx.storage.setAlarm(Date.now() + 1)
     return this.status()
@@ -228,8 +231,6 @@ export class LizardComputeDurableObject extends DurableObject<L4Env> {
         }
         state.stopRequested ||= (await this.current())?.stopRequested
         const paired = result.processed && result.nodeId ? result.nodeId : state.phase === 'pairing' && state.nodeId && result.processed && result.accepted ? state.nodeId : null
-        // A resumed Node may have been turned off by an Owner's stop.
-        if (paired && state.phase === 'pairing') await this.env.DB.prepare('UPDATE compute_nodes SET enabled=1 WHERE id=?').bind(paired).run()
         if (result.processed && result.nodeId) {
           // A newly paired Node replaces this provider's earlier one: environments that named it follow.
           await this.env.DB.prepare(`UPDATE agent_environments SET config_json=json_set(config_json,'$.computeNodeId',?1),version=version+1,updated_at=?2

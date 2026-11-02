@@ -46,7 +46,11 @@ it('creates one VM, pairs the Node, and deletes its VM when stopped',async()=>{
  expect(sandboxes.deleteLizardSandbox).toHaveBeenCalledWith(f.env,'vm-1',workspace)
  expect(volumes.deleteUnusedLizardVolume).not.toHaveBeenCalled()
  expect(f.db.prepare('SELECT enabled FROM compute_nodes WHERE id=?').get(node)).toEqual({enabled:0})
+ // The resumed VM's daemon sends the Node's stored token, which the Server accepts only while the Node is on.
+ let relayed=0
+ vi.mocked(bridge.serviceLizardBridge).mockImplementation(async()=>relayed++%2?{processed:false}:{processed:true,accepted:(f.db.prepare('SELECT enabled FROM compute_nodes WHERE id=?').get(node) as {enabled:number}).enabled===1})
  expect(await object.start(workspace)).toMatchObject({phase:'vm',nodeId:node})
+ expect(f.db.prepare('SELECT enabled FROM compute_nodes WHERE id=?').get(node)).toEqual({enabled:1})
  await object.alarm();await object.alarm();await object.alarm()
  expect(await object.status()).toMatchObject({phase:'ready',nodeId:node})
  expect(f.db.prepare('SELECT enabled FROM compute_nodes WHERE id=?').get(node)).toEqual({enabled:1})

@@ -44,6 +44,24 @@ it('lets Agent access lift one person through one Agent, within the Agent’s ow
   await expect(runAuthorization(f.env, run)).rejects.toMatchObject({ statusCode: 403 })
 })
 
+it('keeps a Run’s saved authority stable while unrelated Agent access changes', async () => {
+  await give({})
+  const { run } = await f.run(ids.member)
+  const saved = (auth: Awaited<ReturnType<typeof runAuthorization>>) => JSON.stringify({ principal: auth.principal, delegation: auth.delegation })
+  const before = saved(await runAuthorization(f.env, run))
+  // Access to the same Agent in another Project, or an unrelated grant expiring, must not revoke work in flight.
+  const b = (await createProject(f.env, await f.actor(), { name: 'B' })).id
+  await give({ policyId: 'project-policy-developer', projectId: b })
+  expect(saved(await runAuthorization(f.env, run))).toBe(before)
+})
+
+it('admits Runs under a person’s daily limit atomically', async () => {
+  await give({ dailyRuns: 1 })
+  const results = await Promise.allSettled([start(ids.member), start(ids.member)])
+  expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+  expect(results.find(result => result.status === 'rejected')).toMatchObject({ reason: { statusCode: 429, data: { error: { code: 'access_budget' } } } })
+})
+
 it('keeps project Agent access inside its Project', async () => {
   const a = (await createProject(f.env, await f.actor(), { name: 'A' })).id
   const b = (await createProject(f.env, await f.actor(), { name: 'B' })).id
@@ -88,6 +106,9 @@ it('never lets someone grant what they do not hold, grant themselves, or open an
   await expect(grantAgentAccess(f.env, as, ids.agent, { policyId: research, memberId: ids.member })).rejects.toMatchObject({ statusCode: 403 })
   await expect(grantAgentAccess(f.env, await f.actor(), ids.agent, { policyId: research, memberId: ids.owner })).rejects.toMatchObject({ statusCode: 400 })
   await expect(grantAgentAccess(f.env, await f.actor(ids.member), ids.agent, { policyId: research, memberId: outsider })).rejects.toMatchObject({ statusCode: 403 })
+  // Nor through their own Role.
+  f.db.prepare('UPDATE roles SET permissions_bitmask=? WHERE id=?').run(Permission.manageAgents | Permission.manageRoles | Permission.useAgents | Permission.browseWeb, 'manager-role')
+  await expect(grantAgentAccess(f.env, await f.actor(manager), ids.agent, { policyId: research, roleId: 'manager-role' })).rejects.toMatchObject({ statusCode: 400 })
   f.db.prepare('UPDATE roles SET permissions_bitmask=? WHERE id=?').run(Permission.manageAgents | Permission.useAgents, 'manager-role')
   const restricted = await f.actor(manager)
   await expect(setAgentAccessMode(f.env, restricted, ids.agent, { access: 'granted' })).resolves.toBe('granted')

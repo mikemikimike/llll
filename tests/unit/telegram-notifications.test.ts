@@ -161,6 +161,15 @@ describe('Pairing Telegram from a browser', () => {
     expect((await post('/api/telegram/links/claim', { code, secret })).status).toBe(410)
   })
 
+  it('limits collecting a code per code, since every Server calls from the same address', async () => {
+    const secret = 'd'.repeat(64)
+    // Many Servers pairing at once, each collecting its own code, are not one caller.
+    for (let n = 0; n < 70; n++) expect((await post('/api/telegram/links/claim', { code: n.toString(16).padStart(24, 'a'), secret })).status).toBe(410)
+    const code = 'f'.repeat(24)
+    for (let n = 0; n < 60; n++) expect((await post('/api/telegram/links/claim', { code, secret })).status).toBe(410)
+    expect((await post('/api/telegram/links/claim', { code, secret })).status).toBe(429)
+  })
+
   it('ignores groups and answers a plain Start with the Shell, and expired codes with a retry hint', async () => {
     expect((await start('/start ' + 'g'.repeat(24), { id: -100, type: 'group' })).status).toBe(200)
     expect(sent.filter(call => call.method === 'sendMessage')).toEqual([])
